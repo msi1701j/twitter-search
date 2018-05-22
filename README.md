@@ -1,5 +1,12 @@
 # twsearch - Twitter Search
 
+## twsearch.py
+
+指定した検索文字列を検索します。
+
+* 環境変数 TWITTER\_TOKEN に bearer トークンを設定してください。
+* 環境変数 TWITTER\_AGENT に User Agent 名を設定してください。
+
 ```
 usage: twsearch.py [-h] [-c DISPCOUNT] [-C COUNT] [-D] [-S SINCE_ID]
                    [-M MAX_ID] [--since_date SINCE_DATE] [--max_date MAX_DATE]
@@ -36,4 +43,23 @@ optional arguments:
   -w, --write_header    出力 CSV ファイルへヘッダタイトルを記入
   -v, --verbose         Verbose 表示
   -s, --silence         Silence 表示
+```
+
+# tools
+## getlimit.py
+
+検索(search)の制限(回数、回復時間)を取得します。
+
+## dispshelve.py
+
+shelve ファイルの内容を出力します。
+
+```
+usage: dispshelve.py [-h] shelvefile
+
+positional arguments:
+  shelvefile  shelveファイル名
+
+optional arguments:
+  -h, --help  show this help message and exit
 ```
