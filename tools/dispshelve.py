@@ -15,6 +15,7 @@ def print_shelve( shelvefile ):
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
-	parser.add_argument('shelvefile', default='shelvefile', help=u'shelveファイル名')
+	parser.add_argument('shelvefile', default='shelvefile',
+										help=u'shelveファイル名')
 	shelvefile = parser.parse_args().shelvefile
 	print_shelve( shelvefile )

@@ -61,9 +61,6 @@ def main():
 
 	if twitter_status is not None:
 		print( json.dumps(twitter_status, ensure_ascii=False, indent=2) )
-		print( 'reset:', datetime.datetime.fromtimestamp(twitter_status['resources']['search']['/search/tweets']['reset']) )
-	else:
-		exit(1)
 #	resources": {
 #	    "search": {
 #		      "/search/tweets": {
@@ -71,6 +68,10 @@ def main():
 #	          "limit": 450,
 #	          "reset": 1526111078
 #		        }
+		print( 'reset:', datetime.datetime.fromtimestamp(twitter_status['resources']['search']['/search/tweets']['reset']) )
+	else:
+		exit(1)
+
 
 if __name__ == '__main__':
 	main()
