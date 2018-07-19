@@ -452,12 +452,19 @@ def main():
 				dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
 				dbase.sync()
 
+		if 'full_text' in tweet:
+			textkey = 'full_text'
+		else:
+			textkey = 'text'
+
+		Debug_print( 'textkey=', textkey )
+
 		tj = {
 			'myCounter': myCounter,
 			'userId': workuser['id'],
 			'name': workuser['name'],
 			'screen_name': workuser['screen_name'],
-			'text': tweet['full_text'],
+			'text': tweet[textkey],
 			'id': tweet['id'],
 			'created_at': tweet['created_at'],
 			'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
