@@ -139,6 +139,7 @@ def get_search_tweets( q, apikey,
 			):
 		if eval(key) is not None:
 			params[key] = eval(key)
+	params['tweet_mode'] = 'extended'
 	saved_params = params.copy()
 
 	headers = {
@@ -456,7 +457,7 @@ def main():
 			'userId': workuser['id'],
 			'name': workuser['name'],
 			'screen_name': workuser['screen_name'],
-			'text': tweet['text'],
+			'text': tweet['full_text'],
 			'id': tweet['id'],
 			'created_at': tweet['created_at'],
 			'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
