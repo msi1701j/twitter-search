@@ -411,11 +411,13 @@ def main():
 						)
 
 	fieldnames = [
+			'myCounter',
 			'created_at_exceltime',
 			'created_at_epoch',
 			'created_at',
 			'created_at_jst',
 			'text',
+			'extended_text',
 			'id',
 			'userId',
 			'name',
@@ -457,6 +459,13 @@ def main():
 		else:
 			textkey = 'text'
 
+		if 'extended_tweet' in tweet:
+			extended_tweet = tweet['extended_tweet']
+			extended_full_text = extended_tweet['full_text']
+		else:
+			extended_tweet = {}
+			extended_full_text = ""
+
 		Debug_print( 'textkey=', textkey )
 
 		tj = {
@@ -464,7 +473,8 @@ def main():
 			'userId': workuser['id'],
 			'name': workuser['name'],
 			'screen_name': workuser['screen_name'],
-			'text': tweet[textkey],
+			'text': str(tweet[textkey]),
+			'extended_full_text': str(extended_full_text),
 			'id': tweet['id'],
 			'created_at': tweet['created_at'],
 			'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
