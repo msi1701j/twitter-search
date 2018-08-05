@@ -38,7 +38,7 @@ def datetime2dateValue(datetime_obj):
 	delta = datetime_obj - datetime.datetime(1899, 12, 30)
 	days = delta.days
 	remain = delta.seconds / 3600 / 24
-	microsec_remain = delta.microseconds * 1000000 / 3600 / 24
+	microsec_remain = delta.microseconds / 1000000 / 3600 / 24
 	return days + remain + microsec_remain
 
 
@@ -244,6 +244,12 @@ def get_shelve_value_or_option( shelvedb, key, option ):
 		return option
 	return get_shelve_value( shelvedb, key )
 
+def get_simple_hashtags(entities_hashtags):
+	hashtags = []
+	for ent in entities_hashtags:
+		hashtags.append(ent['text'])
+	return hashtags
+
 
 # main
 def main():
@@ -259,6 +265,8 @@ def main():
 
 	parser.add_argument('search_string', 
 						help=u'検索文字列')
+	parser.add_argument('-l', '--localno', action='store_true',
+						help=u'ローカル No.')
 	parser.add_argument('-c', '--dispcount', type=int, default=0,
 						help=u'表示数')
 	parser.add_argument('-C', '--count', type=int, default=100,
@@ -355,6 +363,9 @@ def main():
 	max_date = args.max_date
 	Debug_var_print( 'max_date', max_date )
 
+	localno = args.localno
+	Debug_var_print( 'localno', localno )
+
 
 	# 環境変数確認セクション
 	# TWITTER REST API TOKEN, UserAgent 設定確認
@@ -396,34 +407,54 @@ def main():
 	tweets_generator = get_search_tweets( query_str, apikey,
 						geocode=None,
 						lang=None,
-						locale=None,
+						locale='ja',
 						result_type='recent',
 						count=count,
 						until=max_date,
 						since=since_date,
 						since_id=since_id,
 						max_id=max_id,
-						include_entities='false',
+						include_entities='true',
 						useragent=userAgent,
 						next_results=None,
 						retry_max=retry_max,
 						interval_time=5
 						)
 
-	fieldnames = [
-			'myCounter',
-			'created_at_exceltime',
-			'created_at_epoch',
-			'created_at',
-			'created_at_jst',
-			'text',
-			'extended_text',
-			'id',
-			'userId',
-			'name',
-			'screen_name',
-			'fixlink',
-			]
+	if localno:
+		now = datetime.datetime.now()
+		fieldnames = [
+				'gettime',
+				'localno',
+				'created_at_exceltime',
+				'created_at_epoch',
+				'created_at',
+				'created_at_jst',
+				'text',
+				'extended_text',
+				'hashtags',
+				'id',
+				'userId',
+				'name',
+				'screen_name',
+				'fixlink',
+				]
+	else:
+		fieldnames = [
+				'created_at_exceltime',
+				'created_at_epoch',
+				'created_at',
+				'created_at_jst',
+				'text',
+				'extended_text',
+				'hashtags',
+				'id',
+				'userId',
+				'name',
+				'screen_name',
+				'fixlink',
+				]
+
 	writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
 
 	if write_header:
@@ -466,15 +497,19 @@ def main():
 			extended_tweet = {}
 			extended_full_text = ""
 
+		entities = {'hashtags': ["No entities"]}
+		if 'entities' in tweet:
+			entities = tweet['entities']
+
 		Debug_print( 'textkey=', textkey )
 
 		tj = {
-			'myCounter': myCounter,
 			'userId': workuser['id'],
 			'name': workuser['name'],
 			'screen_name': workuser['screen_name'],
 			'text': str(tweet[textkey]),
 			'extended_full_text': str(extended_full_text),
+			'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
 			'id': tweet['id'],
 			'created_at': tweet['created_at'],
 			'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
@@ -482,6 +517,10 @@ def main():
 			'created_at_jst': str_to_datetime_jp(tweet['created_at']),
 			'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
 			}
+		if localno:
+			tj['gettime'] = datetime2dateValue(now)
+			tj['localno'] = myCounter
+
 		Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
 		writer.writerow(tj)
 
