@@ -8,6 +8,7 @@ import requests
 from json import dumps
 import datetime
 import time
+from dateutil.tz import *
 
 import json
 import csv
@@ -43,22 +44,24 @@ def datetime2dateValue(datetime_obj):
     return days + remain + microsec_remain
 
 
-# datetime をエポックタイム (UNIX タイム)へ変換
+# datetime (UTC) をエポックタイム (UNIX タイム)へ変換
 def datetime2epoch(d):
-    return int(time.mktime(d.timetuple()))
+    # UTC を localtime へ変換
+    dl = d.replace(tzinfo=tzutc()).astimezone(tzlocal())
+    return int(time.mktime(dl.timetuple()))
 
 
-# エポックタイム (UNIX タイム) を datetime へ変換
+# エポックタイム (UNIX タイム) を datetime (localtime) へ変換
 def epoch2datetime(epoch):
     return datetime.datetime(*(time.localtime(epoch)[:6]))
 
 
-# ツイートの日付文字列を datetime オブジェクトに変換
+# ツイートの日付(UTC)文字列を datetime オブジェクトに変換
 def str2datetime(datestr):
     return datetime.datetime.strptime(datestr,'%a %b %d %H:%M:%S +0000 %Y')
     
 
-# ツイートの日付文字列をエポック time (UNIX タイム) に変換
+# ツイートの日付(UTC)文字列をエポック time (UNIX タイム) に変換
 def str2epoch(datestr):
     return datetime2epoch(str2datetime(datestr))
     
