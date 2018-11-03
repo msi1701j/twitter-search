@@ -233,6 +233,108 @@ def get_search_tweets( q, apikey,
             next_results = metadata['next_results']
 
 
+# Twitter API Get Tweet
+def get_status_tweet( apikey,
+            id=0,
+            trim_user=0,
+            include_my_retweet=1,
+            include_entities=1,
+            include_ext_alt_text=1,
+            include_card_uri=1,
+            useragent='-',
+            interval_time=5,
+            retry_max=10
+            ):
+
+    global SILENCE
+
+    Search_Endpoint = 'https://api.twitter.com/1.1/statuses/show.json'
+
+    params = {}
+    for key in (
+            'id',
+            'trim_user',
+            'include_my_retweet',
+            'include_entities',
+            'include_ext_alt_text',
+            'include_card_uri'
+            ):
+        if eval(key) is not None:
+            params[key] = eval(key)
+    params['tweet_mode'] = 'extended'
+    saved_params = params.copy()
+
+    headers = {
+        'Authorization':'Bearer {}'.format(apikey),
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'User-Agent':   useragent,
+        }
+
+    retry = 0
+    saved_max_id = None
+    while True:
+        if retry == 0:
+            url = Search_Endpoint
+            params['id'] = id
+            saved_params = params.copy()
+        elif retry <= retry_max:
+            Debug_print( 'retry =', retry )
+            url = Search_Endpoint
+            params = saved_params.copy()
+            if saved_max_id is not None:
+                params['max_id'] = saved_max_id - 1
+            saved_params = params.copy()
+        else:
+            return None
+
+        Verbose_print( 'params =', dumps(params, ensure_ascii=False, indent=2) )
+        Verbose_print( 'url =', url )
+
+        try:
+            res = requests.get(url, headers=headers, params=params)
+            res.raise_for_status()
+        except Exception as e:
+            print(type(e), file=sys.stderr)
+            print( "Error status:", res.status_code, file=sys.stderr )
+            if not SILENCE and res.json() is not None:
+                print( dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+            if res.status_code == 429 or res.status_code == 420:
+                stat = get_status(apikey, useragent)
+                if not SILENCE and stat is not None:
+                    print( dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
+                targetTime = stat['resources']['search']['/search/tweets']['reset']
+                if not SILENCE:
+                    print( 'Target Time:', datetime.datetime.fromtimestamp(targetTime), file=sys.stderr )
+
+                sleepTime = calc_sleeptime( targetTime )
+                Debug_print( 'sleep time:', sleepTime )
+                time.sleep(sleepTime + 1)
+                continue
+
+            elif res.status_code == 500 or res.status_code == 502 or res.status_code == 503 or res.status_code == 504:
+                if retry > retry_max:
+                    Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
+                    raise StopIteration()
+                retry = retry + 1
+                Verbose_print( 'retrying:', retry )
+                time.sleep(interval_time)
+                continue
+
+            elif res.status_code == 404:
+                Debug_print( 'Maybe id not found' )
+                return None
+
+            elif res.status_code == 200:
+                Debug_print( 'No error, but exception occured.' )
+                return res.json()
+
+            else:
+                return None
+
+        entry = res.json()
+        return entry
+
+
 # Shelve File key check
 def get_shelve_value( shelvedb, key ):
     if shelvedb is not None:
@@ -268,7 +370,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('search_string', 
-                        help=u'検索文字列')
+                        help=u'検索文字列 or ID (-i オプションで指定)')
     parser.add_argument('-l', '--localno', action='store_true',
                         help=u'ローカル No.')
     parser.add_argument('-c', '--dispcount', type=int, default=0,
@@ -301,6 +403,8 @@ def main():
                         help=u'出力 CSV ファイルへヘッダタイトルを記入')
     parser.add_argument('-j', '--write_json', action='store_true',
                         help=u'JSON 出力')
+    parser.add_argument('-i', '--id', action='store_true',
+                        help=u'get Tweet as ID')
 
     # 排他オプション
     optgroup1 = parser.add_mutually_exclusive_group()
@@ -308,7 +412,6 @@ def main():
                         help=u'Verbose 表示')
     optgroup1.add_argument('-s', '--silence', action='store_true',
                         help=u'Silence 表示')
-
 
     args = parser.parse_args()
 
@@ -373,6 +476,9 @@ def main():
     write_json = args.write_json
     Debug_var_print( 'write_json', write_json )
 
+    search_id = args.id
+    Debug_var_print( 'search_id', search_id )
+
 
     # 環境変数確認セクション
     # TWITTER REST API TOKEN, UserAgent 設定確認
@@ -392,18 +498,19 @@ def main():
         sleepTime = calc_sleeptime( targetTime )
         Debug_print( 'sleep time:', sleepTime )
 
-    if shelvefile is None:
-        dbase = None
-    else:
-        dbase = shelve.open(shelvefile, flag=shelve_flag)
+    if not search_id:
+        if shelvefile is None:
+            dbase = None
+        else:
+            dbase = shelve.open(shelvefile, flag=shelve_flag)
 
-    saved_max_id = get_shelve_value( dbase, 'last_id' )
-    saved_since_id = get_shelve_value( dbase, 'last_id' )
-    since_id = get_shelve_value_or_option( dbase, 'last_id', since_id )
-    since_date = get_shelve_value_or_option( dbase, 'last_date', since_date )
+        saved_max_id = get_shelve_value( dbase, 'last_id' )
+        saved_since_id = get_shelve_value( dbase, 'last_id' )
+        since_id = get_shelve_value_or_option( dbase, 'last_id', since_id )
+        since_date = get_shelve_value_or_option( dbase, 'last_date', since_date )
 
-    Debug_var_print( 'saved_max_id', saved_max_id )
-    Debug_var_print( 'saved_since_id', saved_since_id )
+        Debug_var_print( 'saved_max_id', saved_max_id )
+        Debug_var_print( 'saved_since_id', saved_since_id )
 
     if outputfile == '-':
         if write_json:
@@ -417,68 +524,64 @@ def main():
             csvfile = open(outputfile, mode=output_mode, newline='',encoding='utf_8_sig')
 
     #################################################
-    tweets_generator = get_search_tweets( query_str, apikey,
-                        geocode=None,
-                        lang=None,
-                        locale='ja',
-                        result_type='recent',
-                        count=count,
-                        until=max_date,
-                        since=since_date,
-                        since_id=since_id,
-                        max_id=max_id,
-                        include_entities='true',
-                        useragent=userAgent,
-                        next_results=None,
-                        retry_max=retry_max,
-                        interval_time=5
-                        )
+    if search_id:
+        tweet = get_status_tweet( apikey,
+                            id=query_str,
+                            trim_user=0,
+                            include_my_retweet=1,
+                            include_entities=1,
+                            include_ext_alt_text=1,
+                            include_card_uri=1,
+                            useragent=userAgent,
+                            interval_time=5,
+                            retry_max=10
+                            )
+        if tweet is None:
+            exit()
 
-    now = datetime.datetime.now()
-    if not write_json:
-        if localno:
-            fieldnames = [
-                    'gettime',
-                    'localno',
-                    'created_at_exceltime',
-                    'created_at_epoch',
-                    'created_at',
-                    'created_at_jst',
-                    'text',
-                    'extended_text',
-                    'hashtags',
-                    'id',
-                    'userId',
-                    'name',
-                    'screen_name',
-                    'fixlink',
-                    ]
-        else:
-            fieldnames = [
-                    'created_at_exceltime',
-                    'created_at_epoch',
-                    'created_at',
-                    'created_at_jst',
-                    'text',
-                    'extended_text',
-                    'hashtags',
-                    'id',
-                    'userId',
-                    'name',
-                    'screen_name',
-                    'fixlink',
-                    ]
+        now = datetime.datetime.now()
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
 
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
 
-        if write_header:
-            writer.writeheader()
+            if write_header:
+                writer.writeheader()
 
-    myCounter = 0
-    local_max_id = 0
-    local_last_date = epoch2datetime(0)
-    for tweet, metadata in tweets_generator:
-        myCounter = myCounter + 1
+        myCounter = 1
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
         tweet_id = tweet['id']
         created_datetime = str2datetime(tweet['created_at'])
 
@@ -486,18 +589,6 @@ def main():
             print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
 
         workuser = tweet['user']
-
-        if local_max_id < tweet_id:
-            local_max_id = tweet_id
-            if dbase is not None:
-                dbase['last_id'] = tweet_id
-                dbase.sync()
-
-        if local_last_date < created_datetime:
-            local_last_date = created_datetime
-            if dbase is not None:
-                dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
-                dbase.sync()
 
         if write_json:
             tj = {
@@ -509,7 +600,7 @@ def main():
                     'created_at_jst': str_to_datetime_jp(tweet['created_at']),
                     },
                 'tweet': tweet,
-                'search_metadata': metadata
+                'search_metadata': {}
                 }
 
             if localno:
@@ -557,6 +648,2102 @@ def main():
 
             Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
             writer.writerow(tj)
+
+    #################################################
+    else:
+        tweets_generator = get_search_tweets( query_str, apikey,
+                            geocode=None,
+                            lang=None,
+                            locale='ja',
+                            result_type='recent',
+                            count=count,
+                            until=max_date,
+                            since=since_date,
+                            since_id=since_id,
+                            max_id=max_id,
+                            include_entities='true',
+                            useragent=userAgent,
+                            next_results=None,
+                            retry_max=retry_max,
+                            interval_time=5
+                            )
+
+        now = datetime.datetime.now()
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
+        now = datetime.datetime.now()
+        if not write_json:
+            if localno:
+                fieldnames = [
+                        'gettime',
+                        'localno',
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+            else:
+                fieldnames = [
+                        'created_at_exceltime',
+                        'created_at_epoch',
+                        'created_at',
+                        'created_at_jst',
+                        'text',
+                        'extended_text',
+                        'hashtags',
+                        'id',
+                        'userId',
+                        'name',
+                        'screen_name',
+                        'fixlink',
+                        ]
+
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+
+            if write_header:
+                writer.writeheader()
+
+        myCounter = 0
+        local_max_id = 0
+        local_last_date = epoch2datetime(0)
+        for tweet, metadata in tweets_generator:
+            myCounter = myCounter + 1
+            tweet_id = tweet['id']
+            created_datetime = str2datetime(tweet['created_at'])
+
+            if not SILENCE:
+                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+
+            workuser = tweet['user']
+
+            if local_max_id < tweet_id:
+                local_max_id = tweet_id
+                if dbase is not None:
+                    dbase['last_id'] = tweet_id
+                    dbase.sync()
+
+            if local_last_date < created_datetime:
+                local_last_date = created_datetime
+                if dbase is not None:
+                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
+                    dbase.sync()
+
+            if write_json:
+                tj = {
+                    'created_time': str2epoch(tweet['created_at']),
+                    'base': {
+                        'created_at': tweet['created_at'],
+                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                        'created_at_epoch': str2epoch(tweet['created_at']),
+                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                        },
+                    'tweet': tweet,
+                    'search_metadata': metadata
+                    }
+
+                if localno:
+                    tj['base']['gettime'] = datetime2dateValue(now)
+                    tj['base']['localno'] = myCounter
+                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
+
+            else:
+                if 'full_text' in tweet:
+                    textkey = 'full_text'
+                else:
+                    textkey = 'text'
+
+                if 'extended_tweet' in tweet:
+                    extended_tweet = tweet['extended_tweet']
+                    extended_full_text = extended_tweet['full_text']
+                else:
+                    extended_tweet = {}
+                    extended_full_text = ""
+
+                entities = {'hashtags': ["No entities"]}
+                if 'entities' in tweet:
+                    entities = tweet['entities']
+
+                Debug_print( 'textkey=', textkey )
+
+                tj = {
+                    'userId': workuser['id'],
+                    'name': workuser['name'],
+                    'screen_name': workuser['screen_name'],
+                    'text': str(tweet[textkey]),
+                    'extended_full_text': str(extended_full_text),
+                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
+                    'id': tweet['id'],
+                    'created_at': tweet['created_at'],
+                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+                    'created_at_epoch': str2epoch(tweet['created_at']),
+                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+                    }
+                if localno:
+                    tj['gettime'] = datetime2dateValue(now)
+                    tj['localno'] = myCounter
+
+                Verbose_print(dumps(tj, ensure_ascii=False, indent=2))
+                writer.writerow(tj)
 
     if outputfile != '-':
         if write_json:
