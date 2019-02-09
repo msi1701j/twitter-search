@@ -5,7 +5,7 @@ from DebugTools import *
 import os, sys
 import argparse
 import requests
-from json import dumps
+import json
 import datetime
 import time
 from dateutil.tz import *
@@ -100,7 +100,7 @@ def get_status(apikey, useragent, resources='search'):
         print(type(e), file=sys.stderr)
         print( "Error status:", res.status_code, file=sys.stderr )
         if res.json() is not None:
-            print( dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+            print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
         return None
 
     return res.json()
@@ -173,21 +173,17 @@ def get_search_tweets( q, apikey,
         else:
             raise StopIteration()
 
-        Verbose_print( 'params =', dumps(params, ensure_ascii=False, indent=2) )
+        Verbose_print( 'params =', json.dumps(params, ensure_ascii=False, indent=2) )
         Verbose_print( 'url =', url )
 
         try:
             res = requests.get(url, headers=headers, params=params)
             res.raise_for_status()
         except Exception as e:
-            print(type(e), file=sys.stderr)
-            print( "Error status:", res.status_code, file=sys.stderr )
-            if not SILENCE and res.json() is not None:
-                print( dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
             if res.status_code == 429 or res.status_code == 420:
                 stat = get_status(apikey, useragent)
                 if not SILENCE and stat is not None:
-                    print( dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
+                    print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
                 targetTime = stat['resources']['search']['/search/tweets']['reset']
                 if not SILENCE:
                     print( 'Target Time:', datetime.datetime.fromtimestamp(targetTime), file=sys.stderr )
@@ -206,7 +202,34 @@ def get_search_tweets( q, apikey,
                 time.sleep(interval_time)
                 continue
 
+            elif res.status_code == 403:
+                brk = True
+                INVALID_PARAM = False
+                resj = res.json()
+                errors = resj['errors']
+                for err in errors:
+                    if err['code'] == 195:
+                        # "message": "Missing or invalid url parameter."
+                        Debug_print( json.dumps(resj, ensure_ascii=False, indent=2) )
+                        IMVALID_PARAM = True
+                        brk = True
+                if brk:
+                    raise StopIteration()
+
+                if retry > retry_max:
+                    Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
+                    raise StopIteration()
+                retry = retry + 1
+                Verbose_print( 'retrying:', retry )
+                time.sleep(interval_time)
+                continue
+
             else:
+                print(type(e), file=sys.stderr)
+                print( "Error status:", res.status_code, file=sys.stderr )
+                if not SILENCE and res.json() is not None:
+                    print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+
                 raise StopIteration()
 
         entry = res.json()
@@ -219,7 +242,7 @@ def get_search_tweets( q, apikey,
             last_index = last_index + 1
 
         if metadata is not None:
-            Debug_print(dumps(metadata, ensure_ascii=False, indent=2))
+            Debug_print(json.dumps(metadata, ensure_ascii=False, indent=2))
 
         if 'next_results' not in metadata:
             retry = retry + 1
@@ -287,7 +310,7 @@ def get_status_tweet( apikey,
         else:
             return None
 
-        Verbose_print( 'params =', dumps(params, ensure_ascii=False, indent=2) )
+        Verbose_print( 'params =', json.dumps(params, ensure_ascii=False, indent=2) )
         Verbose_print( 'url =', url )
 
         try:
@@ -297,11 +320,11 @@ def get_status_tweet( apikey,
             print(type(e), file=sys.stderr)
             print( "Error status:", res.status_code, file=sys.stderr )
             if not SILENCE and res.json() is not None:
-                print( dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+                print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
             if res.status_code == 429 or res.status_code == 420:
                 stat = get_status(apikey, useragent)
                 if not SILENCE and stat is not None:
-                    print( dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
+                    print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
                 targetTime = stat['resources']['search']['/search/tweets']['reset']
                 if not SILENCE:
                     print( 'Target Time:', datetime.datetime.fromtimestamp(targetTime), file=sys.stderr )
@@ -493,7 +516,7 @@ def main():
     if DEBUG:
         stat = get_status(apikey, userAgent)
         if stat is not None:
-            print( dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
+            print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
         targetTime = stat['resources']['search']['/search/tweets']['reset']
         sleepTime = calc_sleeptime( targetTime )
         Debug_print( 'sleep time:', sleepTime )
