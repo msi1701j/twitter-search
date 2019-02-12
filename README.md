@@ -4,21 +4,21 @@
 
 指定した検索文字列を検索します。
 
-* 環境変数 TWITTER\_TOKEN に bearer トークンを設定してください。
-* 環境変数 TWITTER\_AGENT に User Agent 名を設定してください。
+初期設定ファイルはカレントディレクトリの twsearch.ini です。
 
 ```
-usage: twsearch.py [-h] [-c DISPCOUNT] [-C COUNT] [-D] [-S SINCE_ID]
+usage: twsearch.py [-h] [-l] [-c DISPCOUNT] [-C COUNT] [-D] [-S SINCE_ID]
                    [-M MAX_ID] [--since_date SINCE_DATE] [--max_date MAX_DATE]
                    [-t TRYTIME] [-b SHELVE] [-B] [-o OUTPUTFILE] [-O] [-w]
-                   [-v | -s]
+                   [-j] [-i] [-I INIFILE] [-f] [-v | -s]
                    search_string
 
 positional arguments:
-  search_string         検索文字列
+  search_string         検索文字列 or ID (-i オプションで指定)
 
 optional arguments:
   -h, --help            show this help message and exit
+  -l, --localno         ローカル No.
   -c DISPCOUNT, --dispcount DISPCOUNT
                         表示数
   -C COUNT, --count COUNT
@@ -37,18 +37,20 @@ optional arguments:
                         Shelve (パラメータ格納) ファイルの指定
   -B, --shelve_reset    Shelve (パラメータ格納) ファイルのリセット
   -o OUTPUTFILE, --outputfile OUTPUTFILE
-                        出力 CSV ファイル名
+                        出力 (CSV|JSON) ファイル名
   -O, --outputfile_reset
-                        出力 CSV ファイルリセット
+                        出力 (CSV|JSON) ファイルリセット
   -w, --write_header    出力 CSV ファイルへヘッダタイトルを記入
+  -j, --write_json      JSON 出力
+  -i, --id              get Tweet as ID
+  -I INIFILE, --inifile INIFILE
+                        設定ファイルの指定
+  -f, --dummy           dummy オプション
   -v, --verbose         Verbose 表示
   -s, --silence         Silence 表示
 ```
 
 # tools
-## getlimit.py
-
-検索(search)の制限(回数、回復時間)を取得します。
 
 ## dispshelve.py
 
