@@ -1,30 +1,39 @@
-#!/opt/python/twitter-search/bin/python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from DebugTools import *
-import os, sys
-import argparse
-import requests
-import json
+import sys
+
 import datetime
 import time
 from dateutil.tz import *
 
+import configparser
+import argparse
+import os
+
+import requests
+from base64 import b64encode
 import json
 import csv
+
 import shelve
 
 DEBUG = False
 VERBOSE = False
 SILENCE = False
 
+def Debug_print( *strings ):
+    if DEBUG:
+        print( 'Debug:', *strings, file=sys.stderr )
+
+                
 def Verbose_print( *strings ):
     if VERBOSE:
         print( *strings )
 
 
-# Excel の DateValue 形式を datetime へ変換
 def dateValue2datetime(datevalue):
+    """Excel の DateValue 形式を datetime へ変換"""
     days = int(round(datevalue, 0))
     secs = int(round((datevalue - days) * 3600 * 24, 0))
     hour = int(round(secs / 3600, 0))
@@ -35,8 +44,8 @@ def dateValue2datetime(datevalue):
     return datetime.datetime(1899, 12, 30) + datetime.timedelta(days=days, hours=hour, minutes=min, seconds=remain)
 
 
-# datetime を Excel の DateValue 形式へ変換
 def datetime2dateValue(datetime_obj):
+    """datetime を Excel の DateValue 形式へ変換"""
     delta = datetime_obj - datetime.datetime(1899, 12, 30)
     days = delta.days
     remain = delta.seconds / 3600 / 24
@@ -44,785 +53,703 @@ def datetime2dateValue(datetime_obj):
     return days + remain + microsec_remain
 
 
-# datetime (UTC) をエポックタイム (UNIX タイム)へ変換
 def datetime2epoch(d):
-    # UTC を localtime へ変換
+    """datetime (UTC) をエポックタイム (UNIX タイム)へ変換"""
+    #UTC を localtime へ変換
     dl = d.replace(tzinfo=tzutc()).astimezone(tzlocal())
     return int(time.mktime(dl.timetuple()))
 
 
-# エポックタイム (UNIX タイム) を datetime (localtime) へ変換
 def epoch2datetime(epoch):
+    """エポックタイム (UNIX タイム) を datetime (localtime) へ変換"""
     return datetime.datetime(*(time.localtime(epoch)[:6]))
 
 
-# ツイートの日付(UTC)文字列を datetime オブジェクトに変換
 def str2datetime(datestr):
+    """ツイートの日付(UTC)文字列を datetime オブジェクトに変換"""
     return datetime.datetime.strptime(datestr,'%a %b %d %H:%M:%S +0000 %Y')
     
 
-# ツイートの日付(UTC)文字列をエポック time (UNIX タイム) に変換
 def str2epoch(datestr):
+    """ツイートの日付(UTC)文字列をエポック time (UNIX タイム) に変換"""
     return datetime2epoch(str2datetime(datestr))
     
 
-# ツイートのdatetimeを日本標準時間に変換
 def str_to_datetime_jp(datestr):
+    """ツイートのdatetimeを日本標準時間に変換"""
     dts = str2datetime(datestr)
     return (dts + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S JST")
 
 
-# target_epoch_time (UNIX タイム) までの Sleep 秒を返す
-def calc_sleeptime(target_epoch_time):
-    sleepTime = target_epoch_time - int(round(time.time(), 0))
-    Verbose_print( 'Calculated sleep seconds:', sleepTime )
-    return sleepTime
+class Config:
+    """ 設定保持するクラス """
 
-
-# Twitter API サーチの制限を取得する
-def get_status(apikey, useragent, resources='search'):
-
-    Status_Endpoint = 'https://api.twitter.com/1.1/application/rate_limit_status.json'
-    params = {
-        'resources': resources  # help, users, search, statuses etc.
+    __Default_ConfigFile = './twsearch.ini'
+    __Default_Config = {
+        'AppName': 'Twitter-Search',
+        'AppVersion': '2.0',
+        'ConsumerAPIKey': '-',
+        'ConsumerAPISecret': '-',
+        'ShelveFile': './twsearch.shelve',
+        'OutputFile': './twsearch.json'
     }
 
-    headers = {
-        'Authorization':    'Bearer {}'.format(apikey),
-#       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-        'User-Agent': useragent,
-    }
+    def __init__(self):
+        self.__argparams = {}
+        self.__configfile = self.__Default_ConfigFile
+        self.__argparse()
+        
+        if not os.path.exists(self.__configfile):
+            raise Exception('No such file: ' + self.__configfile)
+            
+        self.__config = configparser.ConfigParser()
+        self.__config.read(self.__configfile)
+            
+        if 'DEFAULT' not in self.__config:
+            raise Exception('Required "DEFAULT" section')
+            exit()
 
-    try:
-        res = requests.get(Status_Endpoint, headers=headers, params=params)
-        res.raise_for_status()
-    except Exception as e:
-        print(type(e), file=sys.stderr)
-        print( "Error status:", res.status_code, file=sys.stderr )
-        if res.json() is not None:
-            print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+        self.__params = {}
+        for key in self.__Default_Config:
+            lkey = key.lower()
+            self.__params[lkey] = self.__Default_Config[key]
+
+        default_section = self.__config['DEFAULT']
+        for key in default_section:
+            key = key.lower()
+            Debug_print('default_section: ', key, ':', default_section[key])
+            self.__params[key] = default_section[key]
+
+        self.__mydict = {} 
+        for key in self.__params:
+            key = key.lower()
+            self.__mydict[key] = self.__params[key]
+        for key in self.__argparams:
+            key = key.lower()
+            self.__mydict[key] = self.__argparams[key]
+        
+        if DEBUG:
+            for key in self.__mydict:
+                Debug_print('__mydict[\'' + key +'\'] = ', self.__mydict[key])
+
+    def __argparse(self):
+        global DEBUG
+        global VERBOSE
+        global SILENCE
+        self.__configfile = self.__Default_ConfigFile
+    
+        parser = argparse.ArgumentParser()
+
+        # オプションの設定
+        parser.add_argument('search_string', 
+                            help=u'検索文字列 or ID (-i オプションで指定)')
+        parser.add_argument('-l', '--localno', action='store_true',
+                            help=u'ローカル No.')
+        parser.add_argument('-c', '--dispcount', type=int, default=0,
+                            help=u'表示数')
+        parser.add_argument('-C', '--count', type=int, default=100,
+                            help=u'一度の取得数')
+        parser.add_argument('-D', '--debug', action='store_true',
+                            help=u'Debug モード')
+        parser.add_argument('-S', '--since_id', type=str,
+                            help=u'since_id の指定 (指定 id 含まない)')
+        parser.add_argument('-M', '--max_id', type=str,
+                            help=u'max_id の指定 (指定 id 含む)')
+        parser.add_argument('--since_date', type=str,
+                            help=u'since_date (since) の指定 (指定日含む)')
+        parser.add_argument('--max_date', type=str,
+                            help=u'max_date (until) の指定 (指定日含ない)')
+        parser.add_argument('-t', '--trytime', type=int, default=10,
+                            help=u'リトライ回数')
+        parser.add_argument('-b', '--shelve', type=str,
+                            help=u'Shelve (パラメータ格納) ファイルの指定')
+        parser.add_argument('-B', '--shelve_reset', action='store_true',
+                            help=u'Shelve (パラメータ格納) ファイルのリセット')
+        parser.add_argument('-o', '--outputfile', type=str,
+                            help=u'出力 (CSV|JSON) ファイル名')
+        parser.add_argument('-O', '--outputfile_reset', action='store_true',
+                            help=u'出力 (CSV|JSON) ファイルリセット')
+        parser.add_argument('-w', '--write_header', action='store_true',
+                            help=u'出力 CSV ファイルへヘッダタイトルを記入')
+        parser.add_argument('-j', '--write_json', action='store_true',
+                            help=u'JSON 出力')
+        parser.add_argument('-i', '--id', action='store_true',
+                            help=u'get Tweet as ID')
+        parser.add_argument('-I', '--inifile', type=str, default=self.__Default_ConfigFile,
+                            help=u'設定ファイルの指定')
+        parser.add_argument('-f', '--dummy', action='store_true',
+                            help=u'dummy オプション')
+
+        # 排他オプション
+        optgroup1 = parser.add_mutually_exclusive_group()
+        optgroup1.add_argument('-v', '--verbose', action='store_true',
+                            help=u'Verbose 表示')
+        optgroup1.add_argument('-s', '--silence', action='store_true',
+                            help=u'Silence 表示')
+
+        args = parser.parse_args()
+        
+        if args.debug:
+            self.__argparams['DEBUG'.lower()] = True
+            DEBUG = True
+        Debug_print('Debug is', DEBUG)
+        if args.verbose:
+            self.__argparams['VERBOSE'.lower()] = True
+            VERBOSE = True
+        Debug_print('Verbose is', VERBOSE)
+        if args.silence:
+            self.__argparams['SILENCE'.lower()] = True
+            SILENCE = True
+        Debug_print('Silence is', SILENCE)
+
+        self.__argparams['shelve_flag'] = 'c'
+        if args.shelve_reset:
+            self.__argparams['shelve_flag'.lower()] = 'n'
+        if args.shelve is not None:
+            self.__argparams['ShelveFile'.lower()] = args.shelve
+            Debug_print( 'shelvefile: {}, flag: {}'.format(self.__argparams['ShelveFile'.lower()], self.__argparams['shelve_flag'.lower()]) )
+        else:
+            Debug_print( 'shelvefile: {}, flag: {}'.format('N/A', self.__argparams['shelve_flag'.lower()]) )
+
+        self.__argparams['output_mode'.lower()] = 'a'
+        if args.outputfile_reset:
+            self.__argparams['output_mode'.lower()] = 'w'
+        self.__argparams['outputfile_reset'.lower()] = args.outputfile_reset
+        if args.outputfile:
+            self.__argparams['OutputFile'.lower()] = args.outputfile
+            Debug_print( 'outputfile: {}, mode: {}'.format(self.__argparams['OutputFile'.lower()], self.__argparams['output_mode'.lower()]) )
+        else:
+            Debug_print( 'outputfile: {}, mode: {}'.format('N/A', self.__argparams['output_mode']) )
+
+        self.__argparams['write_header'.lower()] = args.write_header
+        Debug_print( 'write_header: ', self.__argparams['write_header'.lower()] )
+
+        self.__argparams['search_string'.lower()] = args.search_string
+        Debug_print( 'search_string: ', self.__argparams['search_string'.lower()] )
+
+        self.__argparams['count'.lower()] = args.count
+        Debug_print( 'count: ', self.__argparams['count'.lower()] )
+
+        self.__argparams['dispcount'.lower()] = args.dispcount
+        Debug_print( 'dispcount: ', self.__argparams['dispcount'.lower()] )
+
+        self.__argparams['since_id'.lower()] = args.since_id
+        Debug_print( 'since_id: ', self.__argparams['since_id'.lower()] )
+
+        self.__argparams['max_id'.lower()] = args.max_id
+        Debug_print( 'max_id: ', self.__argparams['max_id'.lower()] )
+
+        self.__argparams['retry_max'.lower()] = args.trytime
+        Debug_print( 'retry_max: ', self.__argparams['retry_max'.lower()] )
+
+        self.__argparams['since_date'.lower()] = args.since_date
+        Debug_print( 'since_date: ', self.__argparams['since_date'.lower()] )
+
+        self.__argparams['max_date'.lower()] = args.max_date
+        Debug_print( 'max_date: ', self.__argparams['max_date'.lower()] )
+
+        self.__argparams['localno'.lower()] = args.localno
+        Debug_print( 'localno: ', self.__argparams['localno'.lower()] )
+
+        self.__argparams['write_json'.lower()] = args.write_json
+        Debug_print( 'write_json: ', self.__argparams['write_json'.lower()] )
+
+        self.__argparams['search_id'.lower()] = args.id
+        Debug_print( 'search_id: ', self.__argparams['search_id'.lower()] )
+        
+        self.__argparams['configfile'.lower()] = args.inifile
+        self.__configfile = args.inifile
+        Debug_print( 'configfile: ', self.__argparams['configfile'.lower()] )
+        
+    def argparams(self, key):
+        if key.lower() in self.__argparams:
+            return self.__argparams[key.lower()]
         return None
+    
+    def params(self, key):
+        if key.lower() in self.__params:
+            return self.__params[key.lower()]
+        return None
+    
+    def __getitem__(self, key):
+        if key.lower() in self.__mydict:
+            return self.__mydict[key.lower()]
+        raise KeyError(key)
+        
+    def __setitem__(self, key, value):
+        self.__mydict[key.lower()] = value
+        
+    def __contains__(self, key):
+        return key.lower() in self.__mydict
 
-    return res.json()
 
-
-# Twitter API サーチ
-def get_search_tweets( q, apikey,
-            geocode=None,
-            lang=None,
-            locale=None,
-            result_type='recent',
-            count=100,
-            until=None,
-            since=None,
-            since_id=None,
-            max_id=None,
-            include_entities='false',
-            useragent='-',
-            next_results=None,
-            interval_time=5,
-            retry_max=10
-            ):
-
-    global SILENCE
-
-    Search_Endpoint = 'https://api.twitter.com/1.1/search/tweets.json'
-
-    params = {}
-    for key in (
-            'geocode',
-            'lang',
-            'locale',
-            'result_type',
-            'count',
-            'until',
-            'since',
-            'since_id',
-            'max_id',
-            'include_entities'
-            ):
-        if eval(key) is not None:
-            params[key] = eval(key)
-    params['tweet_mode'] = 'extended'
-    saved_params = params.copy()
-
-    headers = {
-        'Authorization':'Bearer {}'.format(apikey),
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'User-Agent':   useragent,
-        }
-
-    retry = 0
-    saved_max_id = None
-    while True:
-        if retry == 0:
-            if next_results is None:
-                url = Search_Endpoint
-                params['q'] = q
-                saved_params = params.copy()
-            else:
-                url = Search_Endpoint + next_results
-                params = None
-        elif retry <= retry_max:
-            Debug_print( 'retry =', retry )
-            url = Search_Endpoint
-            params = saved_params.copy()
-            if saved_max_id is not None:
-                params['max_id'] = saved_max_id - 1
-            saved_params = params.copy()
-        else:
-            raise StopIteration()
-
-        Verbose_print( 'params =', json.dumps(params, ensure_ascii=False, indent=2) )
-        Verbose_print( 'url =', url )
+#from abc import ABCMeta
+#class Tweets(metaclass=ABCMeta):
+class Tweets:
+    """ Tweets を取得する基底クラス """
+    __Invalid_Param_Error = 195
+    __Auth_Error = 99
+    
+    def __init__(self, config, endpoint, default_params, resource_family='search', resource='/search/tweets'):
+        self.__UserAgent = config['AppName']
+        self.__Bearer = self.__getBearer(config['ConsumerAPIKey'], config['ConsumerAPISecret'])
+        self.__params = {}
+        self.__Endpoint = endpoint
+        self.__Default_Params = default_params.copy()
+        self.__Resource_Family = resource_family
+        self.__Resource = resource
+        self.__params = default_params.copy()
+        
+    def __getBearer(self, apikey, apisec):
+        cred = self.__getCredential(apikey, apisec)
+        Token_Endpoint = 'https://api.twitter.com/oauth2/token'
+        headers = {
+                'Authorization': 'Basic ' + cred,
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'User-Agent': self.__UserAgent
+                }
+        data = {
+                'grant_type': 'client_credentials',
+                }
 
         try:
-            res = requests.get(url, headers=headers, params=params)
-            res.raise_for_status()
+                r = requests.post( Token_Endpoint, data=data, headers=headers )
+                r.raise_for_status()
         except Exception as e:
-            if res.status_code == 429 or res.status_code == 420:
-                stat = get_status(apikey, useragent)
-                if not SILENCE and stat is not None:
-                    print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
-                targetTime = stat['resources']['search']['/search/tweets']['reset']
-                if not SILENCE:
-                    print( 'Target Time:', datetime.datetime.fromtimestamp(targetTime), file=sys.stderr )
-
-                sleepTime = calc_sleeptime( targetTime )
-                Debug_print( 'sleep time:', sleepTime )
-                time.sleep(sleepTime + 1)
-                continue
-
-            elif res.status_code == 500 or res.status_code == 502 or res.status_code == 503 or res.status_code == 504:
-                if retry > retry_max:
-                    Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
-                    raise StopIteration()
-                retry = retry + 1
-                Verbose_print( 'retrying:', retry )
-                time.sleep(interval_time)
-                continue
-
-            elif res.status_code == 403:
-                brk = True
-                INVALID_PARAM = False
-                resj = res.json()
-                errors = resj['errors']
-                for err in errors:
-                    if err['code'] == 195:
-                        # "message": "Missing or invalid url parameter."
-                        Debug_print( json.dumps(resj, ensure_ascii=False, indent=2) )
-                        IMVALID_PARAM = True
-                        brk = True
-                if brk:
-                    raise StopIteration()
-
-                if retry > retry_max:
-                    Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
-                    raise StopIteration()
-                retry = retry + 1
-                Verbose_print( 'retrying:', retry )
-                time.sleep(interval_time)
-                continue
-
-            else:
                 print(type(e), file=sys.stderr)
-                print( "Error status:", res.status_code, file=sys.stderr )
-                if not SILENCE and res.json() is not None:
-                    print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+                print( "Error status:", r.status_code, file=sys.stderr )
+                print( json.dumps(r.json(), ensure_ascii=False, indent=2), file=sys.stderr )
+                return None
 
-                raise StopIteration()
+        rjson = r.json()
+        return rjson['access_token']
 
-        entry = res.json()
-        metadata = entry['search_metadata']
-        last_index = -1
-        for tweet in entry['statuses']:
-            retry = 0
-            saved_max_id = tweet['id']
-            yield (tweet, metadata)
-            last_index = last_index + 1
+    @staticmethod
+    def __getCredential(apikey, apisec):
+        s = apikey + ':' + apisec
+        bcred = b64encode(s.encode('utf-8'))
+        return bcred.decode()
 
-        if metadata is not None:
-            Debug_print(json.dumps(metadata, ensure_ascii=False, indent=2))
-
-        if 'next_results' not in metadata:
-            retry = retry + 1
-            if retry > retry_max:
-                Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
-                raise StopIteration()
-            Verbose_print( 'retrying:', retry )
-            time.sleep(interval_time * retry)
-        else:
-            retry = 0
-            next_results = metadata['next_results']
-
-
-# Twitter API Get Tweet
-def get_status_tweet( apikey,
-            id=0,
-            trim_user=0,
-            include_my_retweet=1,
-            include_entities=1,
-            include_ext_alt_text=1,
-            include_card_uri=1,
-            useragent='-',
-            interval_time=5,
-            retry_max=10
-            ):
-
-    global SILENCE
-
-    Search_Endpoint = 'https://api.twitter.com/1.1/statuses/show.json'
-
-    params = {}
-    for key in (
-            'id',
-            'trim_user',
-            'include_my_retweet',
-            'include_entities',
-            'include_ext_alt_text',
-            'include_card_uri'
-            ):
-        if eval(key) is not None:
-            params[key] = eval(key)
-    params['tweet_mode'] = 'extended'
-    saved_params = params.copy()
-
-    headers = {
-        'Authorization':'Bearer {}'.format(apikey),
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'User-Agent':   useragent,
+    def __get_limit_status(self):
+        Status_Endpoint = 'https://api.twitter.com/1.1/application/rate_limit_status.json'
+        params = {
+            'resources': self.__Resource_Family  # help, users, search, statuses etc.
         }
-
-    retry = 0
-    saved_max_id = None
-    while True:
-        if retry == 0:
-            url = Search_Endpoint
-            params['id'] = id
-            saved_params = params.copy()
-        elif retry <= retry_max:
-            Debug_print( 'retry =', retry )
-            url = Search_Endpoint
-            params = saved_params.copy()
-            if saved_max_id is not None:
-                params['max_id'] = saved_max_id - 1
-            saved_params = params.copy()
-        else:
-            return None
-
-        Verbose_print( 'params =', json.dumps(params, ensure_ascii=False, indent=2) )
-        Verbose_print( 'url =', url )
-
+        headers = {
+            'Authorization':'Bearer {}'.format(self.__Bearer),
+            'User-Agent': self.__UserAgent
+        }
         try:
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(Status_Endpoint, headers=headers, params=params)
             res.raise_for_status()
         except Exception as e:
             print(type(e), file=sys.stderr)
             print( "Error status:", res.status_code, file=sys.stderr )
-            if not SILENCE and res.json() is not None:
+            if res.json() is not None:
                 print( json.dumps(res.json(), ensure_ascii=False, indent=2), file=sys.stderr )
-            if res.status_code == 429 or res.status_code == 420:
-                stat = get_status(apikey, useragent)
-                if not SILENCE and stat is not None:
-                    print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
-                targetTime = stat['resources']['search']['/search/tweets']['reset']
-                if not SILENCE:
-                    print( 'Target Time:', datetime.datetime.fromtimestamp(targetTime), file=sys.stderr )
+            return None
 
-                sleepTime = calc_sleeptime( targetTime )
-                Debug_print( 'sleep time:', sleepTime )
-                time.sleep(sleepTime + 1)
+        return res.json()
+
+    @staticmethod
+    def __calc_sleeptime(target_epoch_time):
+        """target_epoch_time (UNIX タイム) までの Sleep 秒を返す"""
+        sleepTime = target_epoch_time - int(round(time.time(), 0))
+        Verbose_print( 'Calculated sleep seconds:', sleepTime )
+        return sleepTime
+
+    def wait_reset(self):
+        status = self.__get_limit_status()
+        Debug_print(json.dumps(status, ensure_ascii=False, indent=2))
+        remaining = status['resources'][self.__Resource_Family][self.__Resource]['remaining']
+        if remaining == 0:
+            targetTime = status['resources'][self.__Resource_Family][self.__Resource]['reset']
+            sleepTime = self.__calc_sleeptime( targetTime ) + 10 # 念のため、10 秒加算
+            Debug_print( 'targetTime:', epoch2datetime(targetTime), ', sleepTime:', sleepTime)
+            sys.stderr.flush()
+            sys.stdout.flush()
+            time.sleep(sleepTime)
+
+    def set_param(self, key, value):
+        if key in self.__params:
+            self.__params[key] = value
+        
+    def set_params(self, given_params):
+        if given_params is None:
+            self.__params = None
+        else:
+            for key in given_params:
+                self.__params[key] = given_params[key]
+
+    def get_params(self):
+        return self.__params
+
+    def get(self, url, retry_max, interval_time):
+        retry = 0
+        params = self.__params.copy()
+
+        headers = {
+            'Authorization':'Bearer {}'.format(self.__Bearer),
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'User-Agent':   self.__UserAgent,
+        }
+
+        while retry < retry_max:
+            Debug_print( 'params = ', json.dumps(params, ensure_ascii=False, indent=2) )
+
+            res = requests.get(url, headers=headers, params=params)
+            if res.status_code == 500 or res.status_code == 502 or res.status_code == 503 or res.status_code == 504:
+                Verbose_print( 'retrying:', retry + 1)
+                time.sleep(interval_time)
+                retry += 1
+                Verbose_print( 'retrying:', retry + 1)
+                continue
+            elif res.status_code == 403:
+                brk = False
+                for err in errors:
+                    code = err['code']
+                    if code == self.__Invalid_Param_Erro:
+                        # "message": "Missing or invalid url parameter."
+                        brk = True
+                if brk:
+                    raise Exception
+                time.sleep(interval_time)
+                retry += 1
+                Verbose_print( 'retrying:', retry + 1)
+                continue
+            elif res.status_code == 401:
+                # self.__Auth_Error:
+                # Error status: 403
+                # {
+                #   "errors": [
+                #     {
+                #       "label": "authenticity_token_error",
+                #       "code": 99,
+                #       "message": "Unable to verify your credentials"
+                #     }
+                #   ]
+                # }
+                print('Auth Error', file=sys.stderr)
+                raise Exception('Auth Error')
+            else:
+                return res
+
+    @staticmethod
+    def get_simple_hashtags(entities_hashtags):
+        hashtags = []
+        for ent in entities_hashtags:
+            hashtags.append(ent['text'])
+        return hashtags
+
+
+class Tweets_By_Search(Tweets):
+    """ Twitter を検索するクラス """
+    __Default_Params = {
+        'q': '',
+        'result_type': 'recent',
+        'count': 100,
+        'since_id': 0,
+        'include_entities': 'false',
+        'tweet_mode': 'extended'
+    }
+
+    __Resource_Family = 'search'
+    __Resource = '/search/tweets'
+    __Search_Endpoint = 'https://api.twitter.com/1.1/search/tweets.json'
+        
+    def __init__(self, config):
+        super().__init__(
+            config, 
+            self.__Search_Endpoint, 
+            self.__Default_Params, 
+            resource_family=self.__Resource_Family, 
+            resource=self.__Resource
+        )
+        
+    def __set_params(self, given_params):
+        super().set_params(given_params)
+        
+    def __set_param(self, key, value):
+        super().set_param(key, value)
+
+    def __get_params(self):
+        return super().get_params()
+        
+    def generator(self, given_params, retry_max=10, interval_time=5):
+        Debug_print('given_params: ', given_params)
+        self.__set_params(given_params)
+        saved_params = self.__get_params()
+        Debug_print('saved_params: ', saved_params)
+
+        retry = -1
+        local_retry_max = 1
+        saved_max_id = None
+        next_results = None
+        url = self.__Search_Endpoint
+        while retry < local_retry_max:
+            res = False
+            try:
+                res = super().get(url, retry_max=retry_max, interval_time=interval_time)
+            except Exception as e:
+                if res:
+                    resj = res.json()
+                    errors = resj['errors']
+                    for err in errors:
+                        Debug_print( 'errors in generator:', json.dumps(resj, ensure_ascii=False, indent=2) )
+
+                    if res.status_code == 429 or res.status_code == 420:
+                        self.wait_reset()
+                        retry = -1
+                        continue
+                else:
+                    raise StopIteration()
+                    return None
+            
+            entry = res.json()
+            if res.status_code == 429 or res.status_code == 420:
+                errors = entry['errors']
+                Debug_print( 'errors in generator:', json.dumps(entry, ensure_ascii=False, indent=2) )
+                for err in errors:
+                    print( 'status_code ', res.status_code, ', errors: ', json.dumps(err, ensure_ascii=False, indent=2) )
+                # {
+                #   "errors": [
+                #     {
+                #       "code": 88,
+                #       "message": "Rate limit exceeded"
+                #     }
+                #   ]
+                # }
+                self.wait_reset()
+                retry = -1
                 continue
 
-            elif res.status_code == 500 or res.status_code == 502 or res.status_code == 503 or res.status_code == 504:
-                if retry > retry_max:
-                    Debug_print( 'retry:', retry, '>', retry_max, ', StopIteration' )
-                    raise StopIteration()
+            Debug_print('status_code:', res.status_code)
+            Debug_print('entry:', entry)
+            if 'search_metadata' not in entry:
+                print('status_code:', res.status_code, file=sys.stderr)
+                print('"search_metadata" is not in res: res.json() = ', json.dumps(entry, ensure_ascii=False, indent=2), file=sys.stderr)
                 retry = retry + 1
                 Verbose_print( 'retrying:', retry )
-                time.sleep(interval_time)
+                time.sleep(interval_time * retry)
                 continue
+                
+            metadata = entry['search_metadata']
+            for tweet in entry['statuses']:
+                saved_max_id = tweet['id']
+                yield (tweet, metadata)
 
-            elif res.status_code == 404:
-                Debug_print( 'Maybe id not found' )
-                return None
+            if metadata is not None:
+                Debug_print('metadata: ', json.dumps(metadata, ensure_ascii=False, indent=2))
+                pass
 
-            elif res.status_code == 200:
-                Debug_print( 'No error, but exception occured.' )
-                return res.json()
-
+            if 'next_results' not in metadata:
+                retry = retry + 1
+                Verbose_print( 'retrying:', retry )
+                time.sleep(interval_time * retry)
             else:
-                return None
+                next_results = metadata['next_results']
+                self.__set_param('max_id', saved_max_id - 1)
+                url = self.__Search_Endpoint + next_results
+                params = None
+                retry = -1
 
-        entry = res.json()
-        return entry
-
-
-# Shelve File key check
-def get_shelve_value( shelvedb, key ):
-    if shelvedb is not None:
-        if key in shelvedb:
-            return shelvedb[key]
-    return None
+        Debug_print( 'retry:', retry, '>', local_retry_max, ', StopIteration' )
+        raise StopIteration()
 
 
-# return option value if the value is not None, then return shelvedb value
-# Shelve 内容よりも、option の内容が優先される
-def get_shelve_value_or_option( shelvedb, key, option ):
-    if option is not None:
-        return option
-    return get_shelve_value( shelvedb, key )
-
-def get_simple_hashtags(entities_hashtags):
-    hashtags = []
-    for ent in entities_hashtags:
-        hashtags.append(ent['text'])
-    return hashtags
-
-
-# main
-def main():
-    global DEBUG
-    global VERBOSE
-    global SILENCE
-    Debug_print( __name__ )
-
-    #####################################
-    # コマンド引数確認、設定セクション
-    #####################################
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('search_string', 
-                        help=u'検索文字列 or ID (-i オプションで指定)')
-    parser.add_argument('-l', '--localno', action='store_true',
-                        help=u'ローカル No.')
-    parser.add_argument('-c', '--dispcount', type=int, default=0,
-                        help=u'表示数')
-    parser.add_argument('-C', '--count', type=int, default=100,
-                        help=u'一度の取得数')
-    parser.add_argument('-D', '--debug', action='store_true',
-                        help=u'Debug モード')
-    parser.add_argument('-S', '--since_id', type=str, default=None,
-                        help=u'since_id の指定 (指定 id 含まない)')
-    parser.add_argument('-M', '--max_id', type=str, default=None,
-                        help=u'max_id の指定 (指定 id 含む)')
-    parser.add_argument('--since_date', type=str, default=None,
-                        help=u'since_date (since) の指定 (指定日含む)')
-    parser.add_argument('--max_date', type=str, default=None,
-                        help=u'max_date (until) の指定 (指定日含ない)')
-    parser.add_argument('-t', '--trytime', type=int, default=10,
-                        help=u'リトライ回数')
-
-    parser.add_argument('-b', '--shelve', type=str, default=None,
-                        help=u'Shelve (パラメータ格納) ファイルの指定')
-    parser.add_argument('-B', '--shelve_reset', action='store_true',
-                        help=u'Shelve (パラメータ格納) ファイルのリセット')
-
-    parser.add_argument('-o', '--outputfile', type=str, default='output.csv',
-                        help=u'出力 (CSV|JSON) ファイル名')
-    parser.add_argument('-O', '--outputfile_reset', action='store_true',
-                        help=u'出力 (CSV|JSON) ファイルリセット')
-    parser.add_argument('-w', '--write_header', action='store_true',
-                        help=u'出力 CSV ファイルへヘッダタイトルを記入')
-    parser.add_argument('-j', '--write_json', action='store_true',
-                        help=u'JSON 出力')
-    parser.add_argument('-i', '--id', action='store_true',
-                        help=u'get Tweet as ID')
-
-    # 排他オプション
-    optgroup1 = parser.add_mutually_exclusive_group()
-    optgroup1.add_argument('-v', '--verbose', action='store_true',
-                        help=u'Verbose 表示')
-    optgroup1.add_argument('-s', '--silence', action='store_true',
-                        help=u'Silence 表示')
-
-    args = parser.parse_args()
-
-    if args.debug:
-        DEBUG = True
-    Debug_init(DEBUG)
-    Debug_print('Debug is', DEBUG)
-
-    if args.verbose:
-        VERBOSE = True
-    Debug_print('Verbose is', VERBOSE)
-
-    if args.silence:
-        SILENCE = True
-    Debug_print('Silence is', SILENCE)
-
-    shelvefile = args.shelve
-    shelve_flag = 'c'
-    if args.shelve_reset:
-        shelve_flag = 'n'
-    Debug_print( 'shelvefile: {}, flag: {}'.format(shelvefile, shelve_flag) )
-
-    outputfile = args.outputfile
-    output_mode = 'a'
-    if args.outputfile_reset:
-        output_mode = 'w'
-    output_reset = args.outputfile_reset
-
-    outputfile = args.outputfile
-    Debug_print( 'outputfile: {}, mode: {}'.format(outputfile, output_mode) )
-
-    write_header = args.write_header
-    Debug_var_print( 'write_header', write_header )
-
-    query_str = args.search_string
-    Debug_var_print( 'query_str', query_str )
-
-    count = args.count
-    Debug_var_print( 'count', count )
-
-    dispcount = args.dispcount
-    Debug_var_print( 'dispcount', dispcount )
-
-    since_id = args.since_id
-    Debug_var_print( 'since_id', since_id )
-
-    max_id = args.max_id
-    Debug_var_print( 'max_id', max_id)
-
-    retry_max = args.trytime
-    Debug_var_print( 'retry_max', retry_max)
-
-    since_date = args.since_date
-    Debug_var_print( 'since_date', since_date )
-
-    max_date = args.max_date
-    Debug_var_print( 'max_date', max_date )
-
-    localno = args.localno
-    Debug_var_print( 'localno', localno )
-
-    write_json = args.write_json
-    Debug_var_print( 'write_json', write_json )
-
-    search_id = args.id
-    Debug_var_print( 'search_id', search_id )
-
-
-    # 環境変数確認セクション
-    # TWITTER REST API TOKEN, UserAgent 設定確認
-    try:
-        apikey = os.environ['TWITTER_TOKEN']
-        userAgent = os.environ['TWITTER_AGENT']
-    except KeyError:
-        print('環境変数 TWITTER_TOKEN, TWITTER_AGENT を設定してください。', file=sys.stderr)
-        exit(1)
-
-    #################################################
-    if DEBUG:
-        stat = get_status(apikey, userAgent)
-        if stat is not None:
-            print( json.dumps(stat, ensure_ascii=False, indent=2), file=sys.stderr )
-        targetTime = stat['resources']['search']['/search/tweets']['reset']
-        sleepTime = calc_sleeptime( targetTime )
-        Debug_print( 'sleep time:', sleepTime )
-
-    if not search_id:
-        if shelvefile is None:
-            dbase = None
+class CSV_Writer:
+    def __init__(self, config):
+        if outputfile == '-':
+            if write_json:
+                jsonfile = sys.stdout
+            else:
+                csvfile = sys.stdout    # 標準出力
         else:
-            dbase = shelve.open(shelvefile, flag=shelve_flag)
+            if write_json:
+                jsonfile = open(outputfile, mode=output_mode, newline='',encoding='utf_8')
+            else:
+                csvfile = open(outputfile, mode=output_mode, newline='',encoding='utf_8_sig')
 
-        saved_max_id = get_shelve_value( dbase, 'last_id' )
-        saved_since_id = get_shelve_value( dbase, 'last_id' )
-        since_id = get_shelve_value_or_option( dbase, 'last_id', since_id )
-        since_date = get_shelve_value_or_option( dbase, 'last_date', since_date )
 
-        Debug_var_print( 'saved_max_id', saved_max_id )
-        Debug_var_print( 'saved_since_id', saved_since_id )
-
-    if outputfile == '-':
-        if write_json:
-            jsonfile = sys.stdout
+class Splunk_Writer:
+    """ Splunk 読み込み用に Tweet 毎に metadata を付加して書き込むための基底クラス """
+    def __init__(self, config):
+        self.__local_last_id = 0
+        self.__local_last_date = epoch2datetime(0)
+        self.__dbasename = config['ShelveFile'.lower()]
+        self.__outfilename = config['OutputFile'.lower()]
+        self.__outfile_open_mode = config['output_mode']
+        self.__outfp = '-'
+        self.__is_localno = False
+        self.__is_json = config['write_json']
+        self.__is_write_header = config['write_header']
+        
+        if self.__dbasename is None:
+            self.__dbase = None
         else:
-            csvfile = sys.stdout    # 標準出力
-    else:
-        if write_json:
-            jsonfile = open(outputfile, mode=output_mode, newline='',encoding='utf_8')
+            shelve_flag = config['shelve_flag']
+            self.__dbase = shelve.open(self.__dbasename, flag=shelve_flag, writeback=True)
+            for key in ('since_id', 'since_date'):
+                key = key.lower()
+                Debug_print('shelve: ', key, ': ', self.__get_shelve_value(key))
+                if config[key] is None:
+                    config[key] = self.__get_shelve_value(key)
+        
+        if self.__is_json:
+            outfile_encoding = 'utf_8'
         else:
-            csvfile = open(outputfile, mode=output_mode, newline='',encoding='utf_8_sig')
+            outfile_encoding = 'utf_8_sig'
 
-    #################################################
-    if search_id:
-        tweet = get_status_tweet( apikey,
-                            id=query_str,
-                            trim_user=0,
-                            include_my_retweet=1,
-                            include_entities=1,
-                            include_ext_alt_text=1,
-                            include_card_uri=1,
-                            useragent=userAgent,
-                            interval_time=5,
-                            retry_max=10
-                            )
-        if tweet is None:
-            exit()
+        if self.__outfilename == '-':
+            self.__outfp = sys.stdout
+        else:
+            self.__outfp = open(self.__outfilename, mode=self.__outfile_open_mode, newline='',encoding=outfile_encoding)
+
+    # Shelve File key check
+    def __get_shelve_value( self, key ):
+        if self.__dbase is not None:
+            if key in self.__dbase:
+                return self.__dbase[key]
+        return None
+
+    # @abstractmethod
+    def generate(self, config):
+        pass
+
+    def convert(self, tweet, metadata, counter=-1):
+        Debug_print('local_last_id: ', self.__local_last_id, ', local_last_date: ', self.__local_last_date)
+        if self.__local_last_id < metadata['max_id']:
+            self.__local_last_id = metadata['max_id']
+            if self.__dbase is not None:
+                Debug_print('dbase writing: ', metadata['max_id'])
+                self.__dbase['since_id'] = metadata['max_id']
+                self.__dbase.sync()
+
+        if not tweet:
+            return
 
         now = datetime.datetime.now()
-        if not write_json:
-            if localno:
-                fieldnames = [
-                        'gettime',
-                        'localno',
-                        'created_at_exceltime',
-                        'created_at_epoch',
-                        'created_at',
-                        'created_at_jst',
-                        'text',
-                        'extended_text',
-                        'hashtags',
-                        'id',
-                        'userId',
-                        'name',
-                        'screen_name',
-                        'fixlink',
-                        ]
-            else:
-                fieldnames = [
-                        'created_at_exceltime',
-                        'created_at_epoch',
-                        'created_at',
-                        'created_at_jst',
-                        'text',
-                        'extended_text',
-                        'hashtags',
-                        'id',
-                        'userId',
-                        'name',
-                        'screen_name',
-                        'fixlink',
-                        ]
 
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
-
-            if write_header:
-                writer.writeheader()
-
-        myCounter = 1
-        local_max_id = 0
-        local_last_date = epoch2datetime(0)
         tweet_id = tweet['id']
         created_datetime = str2datetime(tweet['created_at'])
-
-        if not SILENCE:
-            print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
-
         workuser = tweet['user']
 
-        if write_json:
-            tj = {
-                'created_time': str2epoch(tweet['created_at']),
-                'base': {
-                    'created_at': tweet['created_at'],
-                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
-                    'created_at_epoch': str2epoch(tweet['created_at']),
-                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
-                    },
-                'tweet': tweet,
-                'search_metadata': {}
-                }
+        if self.__local_last_date < created_datetime:
+            self.__local_last_date = created_datetime
+            if self.__dbase is not None:
+                Debug_print('dbase writing: ', created_datetime.strftime('%Y-%m-%d'))
+                self.__dbase['since_date'] = created_datetime.strftime('%Y-%m-%d')
+                self.__dbase.sync()
 
-            if localno:
-                tj['base']['gettime'] = datetime2dateValue(now)
-                tj['base']['localno'] = myCounter
-            Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
-            print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
 
-        else:
-            if 'full_text' in tweet:
-                textkey = 'full_text'
-            else:
-                textkey = 'text'
+        if not SILENCE:
+            print( 'get tweet: {}: {} - {}'.format( counter, tweet_id, created_datetime ) )
 
-            if 'extended_tweet' in tweet:
-                extended_tweet = tweet['extended_tweet']
-                extended_full_text = extended_tweet['full_text']
-            else:
-                extended_tweet = {}
-                extended_full_text = ""
-
-            entities = {'hashtags': ["No entities"]}
-            if 'entities' in tweet:
-                entities = tweet['entities']
-
-            Debug_print( 'textkey=', textkey )
-
-            tj = {
-                'userId': workuser['id'],
-                'name': workuser['name'],
-                'screen_name': workuser['screen_name'],
-                'text': str(tweet[textkey]),
-                'extended_full_text': str(extended_full_text),
-                'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
-                'id': tweet['id'],
+        tj = {
+            'created_time': str2epoch(tweet['created_at']),
+            'base': {
                 'created_at': tweet['created_at'],
                 'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
                 'created_at_epoch': str2epoch(tweet['created_at']),
                 'created_at_jst': str_to_datetime_jp(tweet['created_at']),
-                'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
-                }
-            if localno:
-                tj['gettime'] = datetime2dateValue(now)
-                tj['localno'] = myCounter
+                },
+            'tweet': tweet,
+            'search_metadata': metadata
+            }
 
-            Verbose_print(json.dumps(tj, ensure_ascii=False, indent=2))
-            writer.writerow(tj)
+        if self.__is_localno:
+            tj['base']['gettime'] = datetime2dateValue(now)
+            tj['base']['localno'] = myCounter
 
-    #################################################
-    else:
-        tweets_generator = get_search_tweets( query_str, apikey,
-                            geocode=None,
-                            lang=None,
-                            locale='ja',
-                            result_type='recent',
-                            count=count,
-                            until=max_date,
-                            since=since_date,
-                            since_id=since_id,
-                            max_id=max_id,
-                            include_entities='true',
-                            useragent=userAgent,
-                            next_results=None,
-                            retry_max=retry_max,
-                            interval_time=5
-                            )
+        #Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
+        self.__write( tj )
 
-        now = datetime.datetime.now()
-        if not write_json:
-            if localno:
-                fieldnames = [
-                        'gettime',
-                        'localno',
-                        'created_at_exceltime',
-                        'created_at_epoch',
-                        'created_at',
-                        'created_at_jst',
-                        'text',
-                        'extended_text',
-                        'hashtags',
-                        'id',
-                        'userId',
-                        'name',
-                        'screen_name',
-                        'fixlink',
-                        ]
-            else:
-                fieldnames = [
-                        'created_at_exceltime',
-                        'created_at_epoch',
-                        'created_at',
-                        'created_at_jst',
-                        'text',
-                        'extended_text',
-                        'hashtags',
-                        'id',
-                        'userId',
-                        'name',
-                        'screen_name',
-                        'fixlink',
-                        ]
+    def flush(self):
+        self.__outfp.flush()
 
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+    def __write(self, tweet_json):
+        if self.__is_json:
+            print(json.dumps(tweet_json, indent=2, ensure_ascii=False), file=self.__outfp)
+            return
 
-            if write_header:
-                writer.writeheader()
+        # Not JSON, but CSV file
+        Debug_print('Not JSON')
+        fieldnames = [ 'created_at_exceltime', 'created_at_epoch', 'created_at', 'created_at_jst',
+                        'text', 'extended_text', 'hashtags', 'id', 'userId', 'name', 'screen_name', 'fixlink', ]
+        writer = csv.DictWriter(self.__outfp, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_ALL)
+        if self.__is_write_header:
+            writer.writeheader()
+            self.__outfp.flush()
 
-        myCounter = 0
-        local_max_id = 0
-        local_last_date = epoch2datetime(0)
-        for tweet, metadata in tweets_generator:
-            myCounter = myCounter + 1
-            tweet_id = tweet['id']
-            created_datetime = str2datetime(tweet['created_at'])
+        tweet = tweet_json['tweet']
 
-            if not SILENCE:
-                print( 'get tweet: {}: {}'.format( myCounter, tweet_id ) )
+        workuser = tweet['user']
 
-            workuser = tweet['user']
-
-            if local_max_id < tweet_id:
-                local_max_id = tweet_id
-                if dbase is not None:
-                    dbase['last_id'] = tweet_id
-                    dbase.sync()
-
-            if local_last_date < created_datetime:
-                local_last_date = created_datetime
-                if dbase is not None:
-                    dbase['last_date'] = created_datetime.strftime('%Y-%m-%d')
-                    dbase.sync()
-
-            if write_json:
-                tj = {
-                    'created_time': str2epoch(tweet['created_at']),
-                    'base': {
-                        'created_at': tweet['created_at'],
-                        'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
-                        'created_at_epoch': str2epoch(tweet['created_at']),
-                        'created_at_jst': str_to_datetime_jp(tweet['created_at']),
-                        },
-                    'tweet': tweet,
-                    'search_metadata': metadata
-                    }
-
-                if localno:
-                    tj['base']['gettime'] = datetime2dateValue(now)
-                    tj['base']['localno'] = myCounter
-                Verbose_print(json.dumps(tj, indent=2, ensure_ascii=False))
-                print(json.dumps(tj, indent=2, ensure_ascii=False), file=jsonfile)
-
-            else:
-                if 'full_text' in tweet:
-                    textkey = 'full_text'
-                else:
-                    textkey = 'text'
-
-                if 'extended_tweet' in tweet:
-                    extended_tweet = tweet['extended_tweet']
-                    extended_full_text = extended_tweet['full_text']
-                else:
-                    extended_tweet = {}
-                    extended_full_text = ""
-
-                entities = {'hashtags': ["No entities"]}
-                if 'entities' in tweet:
-                    entities = tweet['entities']
-
-                Debug_print( 'textkey=', textkey )
-
-                tj = {
-                    'userId': workuser['id'],
-                    'name': workuser['name'],
-                    'screen_name': workuser['screen_name'],
-                    'text': str(tweet[textkey]),
-                    'extended_full_text': str(extended_full_text),
-                    'hashtags': ','.join(get_simple_hashtags(entities['hashtags'])),
-                    'id': tweet['id'],
-                    'created_at': tweet['created_at'],
-                    'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
-                    'created_at_epoch': str2epoch(tweet['created_at']),
-                    'created_at_jst': str_to_datetime_jp(tweet['created_at']),
-                    'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
-                    }
-                if localno:
-                    tj['gettime'] = datetime2dateValue(now)
-                    tj['localno'] = myCounter
-
-                Verbose_print(json.dumps(tj, ensure_ascii=False, indent=2))
-                writer.writerow(tj)
-
-    if outputfile != '-':
-        if write_json:
-            jsonfile.close()
+        if 'full_text' in tweet:
+            textkey = 'full_text'
         else:
-            csvfile.close()
-    if not SILENCE:
-        print( "Total:", myCounter, "items" )
+            textkey = 'text'
 
+        if 'extended_tweet' in tweet:
+            extended_tweet = tweet['extended_tweet']
+            extended_full_text = extended_tweet['full_text']
+        else:
+            extended_tweet = {}
+            extended_full_text = ""
+
+        entities = {'hashtags': [{'text': ''}]}
+        if 'entities' in tweet:
+            entities = tweet['entities']
+        Debug_print( 'entities=', entities )
+
+        Debug_print( 'textkey=', textkey )
+
+        tj = {
+            'userId': workuser['id'],
+            'name': workuser['name'],
+            'screen_name': workuser['screen_name'],
+            'text': str(tweet[textkey]),
+            'extended_full_text': str(extended_full_text),
+            'hashtags': ','.join(Tweets.get_simple_hashtags(entities['hashtags'])),
+            'id': tweet['id'],
+            'created_at': tweet['created_at'],
+            'created_at_exceltime': datetime2dateValue(str2datetime(tweet['created_at'])),
+            'created_at_epoch': str2epoch(tweet['created_at']),
+            'created_at_jst': str_to_datetime_jp(tweet['created_at']),
+            'fixlink': 'https://twitter.com/' + workuser['screen_name'] + '/status/' + tweet['id_str']
+            }
+        if self.__is_localno:
+            tj['gettime'] = datetime2dateValue(now)
+            tj['localno'] = myCounter
+
+        Verbose_print(json.dumps(tj, ensure_ascii=False, indent=2))
+        writer.writerow(tj)
+
+
+class Splunk_Writer_By_Search(Splunk_Writer):
+    """ Splunk 用に Twitter を検索して取得するクラス """
+    def __init__(self, config):
+        super().__init__(config)
+
+    def generate(self, config):
+        query = config['search_string']
+        params = {'q': query}
+        since_id = config['since_id']
+        if since_id is not None:
+            params['since_id'] = since_id
+        since_date = config['since_date']
+        if since_date is not None:
+            params['since_date'] = since_date
+        twbs = Tweets_By_Search(config)
+        tweets_generator = twbs.generator(params)
+        counter = 0
+        for tweet, metadata in tweets_generator:
+            counter += 1
+            super().convert(tweet, metadata, counter)
+    
 
 if __name__ == '__main__':
-    main()
+    config = Config()
+    Debug_print(config['AppName'])
+    sw = Splunk_Writer_By_Search(config)
+    sw.generate(config)
