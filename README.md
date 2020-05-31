@@ -1,5 +1,25 @@
 # twsearch - Twitter Search
 
+## インストール
+
+* [MyConfig](https://github.com/msi1701j/MyConfig) を使用しているので、環境変数 PYTHONPATH などで、読み込み可能なディレクトリに `custom_config/` を置いてください。
+* 設定ファイルは `default/` `local/` の順に検索します。これらのディレクトリが存在するディレクトリを環境変数 `CUSTOM_CONFIG_DIR` に設定してください。
+* `default/` 下のファイルは修正せず、`local/` 下にコピーして修正してください。
+* `${CUSTOM_CONFIG_DIR}/local/twsearch.ini` に `ConsumerAPIKey` と `CosumerAPISecret` を設定してください。
+
+```ini:default/twsearch.ini
+AppName = Your Application Name
+AppVersion = Your Application Version
+# Consumer Key
+ConsumerAPIKey = Your_Consumer_API_Key
+# Consumer Secret
+ConsumerAPISecret = Your_Consumer_API_Secret_Key
+# Access Token
+#AccessToken = Not Required
+# Accesss Token Secret
+#AccessTokenSecret = Not Required
+```
+
 ## twsearch.py
 
 指定した検索文字列を検索します。
@@ -65,3 +85,10 @@ positional arguments:
 optional arguments:
   -h, --help  show this help message and exit
 ```
+
+# 変更履歴
+
+|Version|Rlease Date|Desctiption|
+|:--|:--|:--|
+|[0.2.0](https://github.com/msi1701j/twitter-search/releases/tag/v0.2.0)|2020/05/31|[MyConfig](https://github.com/msi1701j/MyConfig) を使用して、モジュールを分離
+|0.1.0|-|Initial Release
