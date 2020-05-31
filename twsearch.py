@@ -14,6 +14,7 @@ from tslib import Tweets
 from tslib import epoch2datetime, \
             str2datetime, str2epoch, datetime2datevalue, str_to_datetime_jp
 
+__APP_VERSION__ = "v0.2.0"
 
 class TweetsBySearch(Tweets):
     """ Twitter を検索するクラス """
