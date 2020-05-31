@@ -4,5 +4,4 @@ idna
 pkg-resources
 python-dateutil
 requests
-six
 urllib3
