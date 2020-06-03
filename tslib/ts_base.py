@@ -97,6 +97,11 @@ class Tweets:
         bcred = b64encode(pair.encode('utf-8'))
         return bcred.decode()
 
+
+    def get_limit_status(self):
+        return self.__get_limit_status()
+
+
     def __get_limit_status(self):
         STATUS_ENDPOINT = 'https://api.twitter.com/1.1/application/rate_limit_status.json'
         params = {

@@ -8,13 +8,16 @@ import shelve
 import json
 import csv
 import datetime
+import argparse
 
 from tslib import TwsConfig
 from tslib import Tweets
 from tslib import epoch2datetime, \
             str2datetime, str2epoch, datetime2datevalue, str_to_datetime_jp
 
-__APP_VERSION__ = "v0.2.0"
+APP_NAME = "twsearch"
+APP_VERSION = "v0.2.0"
+DEFAULT_CONFIG_FILE = APP_NAME + ".ini"
 
 class TweetsBySearch(Tweets):
     """ Twitter を検索するクラス """
@@ -39,6 +42,36 @@ class TweetsBySearch(Tweets):
             resource_family=self.__Resource_Family,
             resource=self.__Resource
         )
+
+    def disp_limit_status(self):
+        """Rate Limit 情報の表示"""
+        gls_json = self.get_limit_status()
+        print(json.dumps(gls_json, indent=2, ensure_ascii=False))
+
+#{
+#  "rate_limit_context": {
+#    "application": "dummykey"
+#  },
+#  "resources": {
+#    "search": {
+#      "/search/tweets": {
+#        "limit": 450,
+#        "remaining": 0,
+#        "reset": 1590937633
+#      }
+#    }
+#  }
+#}
+        resources = gls_json['resources']['search']['/search/tweets']
+        limit = resources['limit']
+        remaining = resources['remaining']
+        reset = resources['reset']
+        e2d = epoch2datetime(reset)
+        print(f"limit: {limit}")
+        print(f"remaining: {remaining}")
+        print(f"reset: {reset}")
+        print(f"reset(epoch2datetime): {e2d}")
+
 
 class _CSVWriter:   # unused in current
     """ CSV 書き出し用クラス """
@@ -76,6 +109,9 @@ class SplunkWriter:
         self.__is_write_header = config['write_header']
         self.__write_header_yet = True
 
+        if config['getstatus']:
+            return
+
         if self.__dbasename is None:
             self.__dbase = None
         else:
@@ -100,6 +136,11 @@ class SplunkWriter:
             self.__outfp = open(self.__outfilename, mode=self.__outfile_open_mode,
                                 newline='', encoding=outfile_encoding)
 
+    def disp_limit_status(self):
+        """Rate Limit 情報の表示"""
+        twbs = TweetsBySearch(self.config)
+        return twbs.disp_limit_status()
+
     # Shelve File key check
     def __get_shelve_value(self, key):
         if self.__dbase is not None:
@@ -110,7 +151,7 @@ class SplunkWriter:
     # @abstractmethod
     def generate(self, config):
         """レコード生成メソッド"""
-        pass
+        pass    # ignore
 
     def convert(self, tweet, metadata, counter=-1):
         """時刻変換、追加、レコードの書き込み"""
@@ -252,13 +293,180 @@ class SplunkWriterBySearch(SplunkWriter):
             super().convert(tweet, metadata, counter)
 
 
+def tw_argparse():
+    """コマンドライン引数の Parse"""
+
+    parser = argparse.ArgumentParser()
+
+    # オプションの設定
+    parser.add_argument('search_string', nargs='*', default=[],
+                        help=u'検索文字列 or ID (-i オプションで指定)')
+    parser.add_argument('-l', '--localno', action='store_true',
+                        help=u'ローカル No.')
+    parser.add_argument('-c', '--dispcount', type=int, default=-1,
+                        help=u'表示数')
+    parser.add_argument('-C', '--count', type=int, default=100,
+                        help=u'一度の取得数 (デフォルト 100 (最大値))')
+    parser.add_argument('-S', '--since_id', type=str, default=None,
+                        help=u'since_id の指定 (指定 id 含まない)')
+    parser.add_argument('-M', '--max_id', type=str, default=None,
+                        help=u'max_id の指定 (指定 id 含む)')
+    parser.add_argument('--since_date', type=str, default=None,
+                        help=u'since_date (since) の指定 (指定日含む)')
+    parser.add_argument('--max_date', type=str, default=None,
+                        help=u'max_date (until) の指定 (指定日含ない)')
+    parser.add_argument('-t', '--retry_max', type=int, default=5,
+                        help=u'リトライ回数 (デフォルト 5)')
+    parser.add_argument('-b', '--shelvefile', type=str,
+                        help=u'Shelve (パラメータ格納) ファイルの指定')
+    parser.add_argument('-B', '--shelve_reset', action='store_true',
+                        help=u'Shelve (パラメータ格納) ファイルのリセット')
+    parser.add_argument('-o', '--outputfile', type=str,
+                        help=u'出力 (CSV|JSON) ファイル名')
+    parser.add_argument('-O', '--outputfile_reset', action='store_true',
+                        help=u'出力 (CSV|JSON) ファイルリセット (不指定時はファイルに追記)')
+    parser.add_argument('-w', '--write_header', action='store_true',
+                        help=u'出力 CSV ファイルへヘッダタイトルを記入')
+    parser.add_argument('-j', '--write_json', action='store_true',
+                        help=u'JSON 出力')
+    parser.add_argument('-i', '--id', type=str, default=None,
+                        help=u'get Tweet as ID')
+    parser.add_argument('-I', '--inifile', type=str, default=DEFAULT_CONFIG_FILE,
+                        help=u'設定ファイルの指定 (デフォルトは {})'.format(DEFAULT_CONFIG_FILE) + \
+                        u'ディレクトリの指定は環境変数CUSTOM_CONFIG_DIR')
+    parser.add_argument('-f', '--dummy', action='store_true',
+                        help=u'dummy オプション')
+    parser.add_argument('-d', '--dryrun', action='store_true',
+                        help=u'Dry Run, no execution')
+    parser.add_argument('-g', '--getstatus', action='store_true',
+                        help=u'limit status 情報を取得・表示して終了')
+
+    # 排他オプション
+    optgroup1 = parser.add_mutually_exclusive_group()
+    optgroup1.add_argument('-v', '--verbose', action='store_true',
+                           help=u'Verbose 表示 (logging INFO レベル)')
+    optgroup1.add_argument('-s', '--silence', action='store_true',
+                           help=u'Silence 表示')
+    optgroup1.add_argument('-D', '--debug', action='store_true',
+                           help=u'Debug モード')
+
+    args = parser.parse_args()
+
+    argparams = dict()
+
+    argparams['logging_level'] = logging.WARN
+    logging.basicConfig(level=logging.WARN)
+
+    argparams['DEBUG'.lower()] = args.debug
+    if args.debug:
+        argparams['logging_level'] = logging.DEBUG
+        logging.basicConfig(level=logging.DEBUG)
+    logging.debug('Debug is %s', args.debug)
+
+    argparams['VERBOSE'.lower()] = args.verbose
+    if args.verbose:
+        argparams['logging_level'] = logging.INFO
+        logging.basicConfig(level=logging.INFO)
+    logging.debug('Verbose is %s', args.verbose)
+
+    argparams['SILENCE'.lower()] = args.silence
+    if args.silence:
+        argparams['logging_level'] = logging.ERROR
+        logging.basicConfig(level=logging.ERROR)
+    logging.debug('Silence is %s', args.silence)
+
+
+    argparams['shelve_flag'] = 'c'
+    if args.shelve_reset:
+        argparams['shelve_flag'.lower()] = 'n'
+    if args.shelvefile is not None:
+        argparams['ShelveFile'.lower()] = args.shelvefile
+        logging.debug('shelvefile: %s, flag: %s',
+                      argparams['ShelveFile'.lower()],
+                      argparams['shelve_flag'.lower()])
+    else:
+        logging.debug('shelvefile: %s, flag: %s', 'N/A', argparams['shelve_flag'.lower()])
+
+    argparams['output_mode'.lower()] = 'a'
+    if args.outputfile_reset:
+        argparams['output_mode'.lower()] = 'w'
+    argparams['outputfile_reset'.lower()] = args.outputfile_reset
+    if args.outputfile:
+        argparams['OutputFile'.lower()] = args.outputfile
+        logging.debug('outputfile: %s, mode: %s',
+                      argparams['OutputFile'.lower()],
+                      argparams['output_mode'.lower()])
+    else:
+        logging.debug('outputfile: %s, mode: %s', 'N/A', argparams['output_mode'])
+
+    argparams['write_header'.lower()] = args.write_header
+    logging.debug('write_header: %s', argparams['write_header'.lower()])
+
+    argparams['search_string'.lower()] = ' '.join(args.search_string)
+    logging.debug('search_string: %s', argparams['search_string'.lower()])
+
+    argparams['count'.lower()] = args.count
+    logging.debug('count: %s', argparams['count'.lower()])
+
+    argparams['dispcount'.lower()] = args.dispcount
+    logging.debug('dispcount: %s', argparams['dispcount'.lower()])
+
+    argparams['since_id'.lower()] = args.since_id
+    logging.debug('since_id: %s', argparams['since_id'.lower()])
+
+    argparams['max_id'.lower()] = args.max_id
+    logging.debug('max_id: %s', argparams['max_id'.lower()])
+
+    argparams['retry_max'.lower()] = args.retry_max
+    logging.debug('retry_max: %s', argparams['retry_max'.lower()])
+
+    argparams['since_date'.lower()] = args.since_date
+    logging.debug('since_date: %s', argparams['since_date'.lower()])
+
+    argparams['max_date'.lower()] = args.max_date
+    logging.debug('max_date: %s', argparams['max_date'.lower()])
+
+    argparams['localno'.lower()] = args.localno
+    logging.debug('localno: %s', argparams['localno'.lower()])
+
+    argparams['write_json'.lower()] = args.write_json
+    logging.debug('write_json: %s', argparams['write_json'.lower()])
+    if args.write_json and (not args.outputfile):
+        argparams['OutputFile'.lower()] = APP_NAME + '.json'
+        logging.debug('outputfile: %s, mode: %s',
+                      argparams['OutputFile'.lower()],
+                      argparams['output_mode'.lower()])
+
+    argparams['search_id'.lower()] = args.id
+    logging.debug('search_id: %s', argparams['search_id'.lower()])
+
+    argparams['configfile'.lower()] = args.inifile
+    logging.debug('configfile: %s', argparams['configfile'.lower()])
+
+    argparams['dryrun'.lower()] = args.dryrun
+    logging.debug('dryrun: %s', argparams['dryrun'.lower()])
+
+    argparams['getstatus'.lower()] = args.getstatus
+    logging.debug('getstatus: %s', argparams['getstatus'.lower()])
+
+    return argparams
+
+
 def main():
     """main()"""
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.WARN)
-    config = TwsConfig()
+    config = TwsConfig(tw_argparse())
     config.logger.info("config['AppName']: %s", config['AppName'])
     splunk_writer = SplunkWriterBySearch(config=config)
+    if config['getstatus']:
+        splunk_writer.disp_limit_status()
+        return
+
+    if config['search_string'] == "":
+        print("Search String is required", file=sys.stderr)
+        return
+
     splunk_writer.generate(config)
 
 
