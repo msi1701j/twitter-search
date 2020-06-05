@@ -39,9 +39,9 @@ class TwsConfig(Config):
 
         super().__init__(self.__configfile, default_config=self.__Default_Config)
 
-        for key in self.__argparams:
+        for key, value in self.__argparams.items():
             key = key.lower()
-            super().__setitem__(key, self.__argparams[key])
+            super().__setitem__(key, value)
 
         for key in self.__iter__():
             if key in ("consumerapikey", "consumerapisecret"):

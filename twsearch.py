@@ -19,6 +19,14 @@ APP_NAME = "twsearch"
 APP_VERSION = "v0.2.0"
 DEFAULT_CONFIG_FILE = APP_NAME + ".ini"
 
+SEARCH_ENDPOINT = 'https://api.twitter.com/1.1/search/tweets.json'
+SEARCH_FAMILY = 'search'
+SEARCH_RESOURCE = '/search/tweets'
+
+GETID_ENDPOINT = "https://api.twitter.com/1.1/statuses/show.json"
+GETID_FAMILY = "statuses"
+GETID_RESOURCE = "statuses/show"
+
 class TweetsBySearch(Tweets):
     """ Twitter を検索するクラス """
     __Default_Params = {
@@ -30,18 +38,23 @@ class TweetsBySearch(Tweets):
         'tweet_mode': 'extended'
     }
 
-    __Resource_Family = 'search'
-    __Resource = '/search/tweets'
-    __Search_Endpoint = 'https://api.twitter.com/1.1/search/tweets.json'
+    __Resource_Family = SEARCH_FAMILY
+    __Resource = SEARCH_RESOURCE
+    __Search_Endpoint = SEARCH_ENDPOINT
 
-    def __init__(self, config: "TwsConfig"):
+    def __init__(self, config: "TwsConfig",
+                 endpoint=__Search_Endpoint,
+                 default_params=__Default_Params,
+                 resource_family=__Resource_Family,
+                 resource=__Resource):
         super().__init__(
             config=config,
-            endpoint=self.__Search_Endpoint,
-            default_params=self.__Default_Params,
-            resource_family=self.__Resource_Family,
-            resource=self.__Resource
+            endpoint=endpoint,
+            default_params=default_params,
+            resource_family=resource_family,
+            resource=resource
         )
+
 
     def disp_limit_status(self):
         """Rate Limit 情報の表示"""
@@ -112,18 +125,19 @@ class SplunkWriter:
         if config['getstatus']:
             return
 
-        if self.__dbasename is None:
-            self.__dbase = None
-        else:
-            shelve_flag = config['shelve_flag']
-            self.logger.debug("self.__dbasename: %s, shelve_flag: %s",
-                              self.__dbasename, shelve_flag)
-            self.__dbase = shelve.open(self.__dbasename, flag=shelve_flag, writeback=True)
-            for key in ('since_id', 'since_date'):
-                key = key.lower()
-                self.logger.debug("shelve: %s: %s", key, self.__get_shelve_value(key))
-                if config[key] is None:
-                    config[key] = self.__get_shelve_value(key)
+        if config['search_id'] is None:
+            if self.__dbasename is None:
+                self.__dbase = None
+            else:
+                shelve_flag = config['shelve_flag']
+                self.logger.debug("self.__dbasename: %s, shelve_flag: %s",
+                                  self.__dbasename, shelve_flag)
+                self.__dbase = shelve.open(self.__dbasename, flag=shelve_flag, writeback=True)
+                for key in ('since_id', 'since_date'):
+                    key = key.lower()
+                    self.logger.debug("shelve: %s: %s", key, self.__get_shelve_value(key))
+                    if config[key] is None:
+                        config[key] = self.__get_shelve_value(key)
 
         if self.__is_json:
             outfile_encoding = 'utf_8'
@@ -136,6 +150,11 @@ class SplunkWriter:
             self.__outfp = open(self.__outfilename, mode=self.__outfile_open_mode,
                                 newline='', encoding=outfile_encoding)
 
+    def __del__(self):
+        if self.__outfilename != '-' and self.__outfp != '-':
+            self.__outfp.close()
+
+        
     def disp_limit_status(self):
         """Rate Limit 情報の表示"""
         twbs = TweetsBySearch(self.config)
@@ -148,6 +167,13 @@ class SplunkWriter:
                 return self.__dbase[key]
         return None
 
+    def get_one_tweet(self):
+        twbs = TweetsBySearch(self.config,
+                              endpoint=GETID_ENDPOINT,
+                              resource_family=GETID_FAMILY,
+                              resource=GETID_RESOURCE)
+        return twbs.get_one_tweet(self.config['search_id'])
+
     # @abstractmethod
     def generate(self, config):
         """レコード生成メソッド"""
@@ -155,14 +181,15 @@ class SplunkWriter:
 
     def convert(self, tweet, metadata, counter=-1):
         """時刻変換、追加、レコードの書き込み"""
-        self.logger.debug("local_last_id: %d, local_last_date: %s",
-                          self.__local_last_id, self.__local_last_date)
-        if self.__local_last_id < metadata['max_id']:
-            self.__local_last_id = metadata['max_id']
-            if self.__dbase is not None:
-                self.logger.debug("dbase writing: %s", metadata['max_id'])
-                self.__dbase['since_id'] = metadata['max_id']
-                self.__dbase.sync()
+        if self.config['search_id'] is None:
+            self.logger.debug("local_last_id: %d, local_last_date: %s",
+                              self.__local_last_id, self.__local_last_date)
+            if self.__local_last_id < metadata['max_id']:
+                self.__local_last_id = metadata['max_id']
+                if self.__dbase is not None:
+                    self.logger.debug("dbase writing: %s", metadata['max_id'])
+                    self.__dbase['since_id'] = metadata['max_id']
+                    self.__dbase.sync()
 
         if not tweet:
             return
@@ -173,13 +200,13 @@ class SplunkWriter:
         created_datetime = str2datetime(tweet['created_at'])
         # workuser = tweet['user']
 
-        if self.__local_last_date < created_datetime:
-            self.__local_last_date = created_datetime
-            if self.__dbase is not None:
-                self.logger.debug("dbase writing: %s", created_datetime.strftime('%Y-%m-%d'))
-                self.__dbase['since_date'] = created_datetime.strftime('%Y-%m-%d')
-                self.__dbase.sync()
-
+        if self.config['search_id'] is None:
+            if self.__local_last_date < created_datetime:
+                self.__local_last_date = created_datetime
+                if self.__dbase is not None:
+                    self.logger.debug("dbase writing: %s", created_datetime.strftime('%Y-%m-%d'))
+                    self.__dbase['since_date'] = created_datetime.strftime('%Y-%m-%d')
+                    self.__dbase.sync()
 
 #        if not SILENCE:
 #            print('get tweet: {}: {} - {}'.format(counter, tweet_id, created_datetime))
@@ -276,21 +303,30 @@ class SplunkWriterBySearch(SplunkWriter):
 #        super().__init__(config)
 
     def generate(self, config):
-        query = config['search_string']
-        params = {'q': query}
-        for key in ('since_id', 'since_date', 'max_id', 'max_date', 'count'):
-            value = config[key]
-            if value is not None:
-                params[key] = value
+        if config['search_id'] is None:
+            query = config['search_string']
+            params = {'q': query}
+            for key in ('since_id', 'since_date', 'max_id', 'max_date', 'count'):
+                value = config[key]
+                if value is not None:
+                    params[key] = value
 
-        twbs = TweetsBySearch(config)
-        tweets_generator = twbs.generator(params, retry_max=config['retry_max'],
-                                          interval_time=config['interval_time'],
-                                          dispcount=config['dispcount'])
-        counter = 0
-        for tweet, metadata in tweets_generator:
-            counter += 1
-            super().convert(tweet, metadata, counter)
+        if config['search_id'] is None:
+            twbs = TweetsBySearch(config)
+            tweets_generator = twbs.generator(params, retry_max=config['retry_max'],
+                                              interval_time=config['interval_time'],
+                                              dispcount=config['dispcount'])
+            counter = 0
+            for tweet, metadata in tweets_generator:
+                counter += 1
+                super().convert(tweet, metadata, counter)
+        else:   # config['search_id' is not None
+            twbs = TweetsBySearch(self.config,
+                                  endpoint=GETID_ENDPOINT,
+                                  resource_family=GETID_FAMILY,
+                                  resource=GETID_RESOURCE)
+            tweet = twbs.get_one_tweet(config['search_id'])
+            self.convert(tweet, metadata={}, counter=1)
 
 
 def tw_argparse():
@@ -449,6 +485,10 @@ def tw_argparse():
     argparams['getstatus'.lower()] = args.getstatus
     logging.debug('getstatus: %s', argparams['getstatus'.lower()])
 
+    if argparams['search_id'] is None and argparams['search_string'] == "":
+        print("Search String is required", file=sys.stderr)
+        parser.print_usage()
+        sys.exit(2)
     return argparams
 
 
@@ -461,12 +501,7 @@ def main():
     splunk_writer = SplunkWriterBySearch(config=config)
     if config['getstatus']:
         splunk_writer.disp_limit_status()
-        return
-
-    if config['search_string'] == "":
-        print("Search String is required", file=sys.stderr)
-        return
-
+        sys.exit(0)
     splunk_writer.generate(config)
 
 
