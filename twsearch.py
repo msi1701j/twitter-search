@@ -19,7 +19,7 @@ from tslib import epoch2datetime, \
             str2datetime, str2epoch, datetime2datevalue, str_to_datetime_jp
 
 APP_NAME = "twsearch"
-APP_VERSION = "v0.2.0"
+APP_VERSION = "v0.3.0"
 DEFAULT_CONFIG_FILE = APP_NAME + ".ini"
 
 SEARCH_ENDPOINT = 'https://api.twitter.com/1.1/search/tweets.json'
