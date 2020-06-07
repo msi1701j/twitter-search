@@ -24,7 +24,7 @@ GETID_ENDPOINT = "https://api.twitter.com/1.1/statuses/show.json"
 GETID_FAMILY = "statuses"
 GETID_RESOURCE = "statuses/show"
 
-RE_VALNUM = re.compile(r'(?P<target>("statuses_count"|"favorite_count"|"favourites_count"):\s*)\d+')
+RE_VALNUM = re.compile(r'(?P<target>"(statuses_count|favorite_count|favourites_count|friends_count|followers_count)":\s*)\d+')
 
 class TestTweetsSearchId(unittest.TestCase):
     """Tweets の unittest"""
@@ -33,13 +33,15 @@ class TestTweetsSearchId(unittest.TestCase):
         argparams = {}
         self.config = TwsConfig(argparams)
         self.config['dryrun'] = False
+        self.default_params = {"tweet_mode": "extended"}
        
+    def tearDown(self):
+        del self.config
 
     def test_001(self):
         """id 指定 Tweet のテスト(JSON 個別指定)"""
-        params = {"tweet_mode": "extended"}
         tw = Tweets(self.config, endpoint=GETID_ENDPOINT,
-                    default_params=params,
+                    default_params=self.default_params,
                     resource_family=GETID_FAMILY, resource=GETID_RESOURCE)
         search_id = "1268346734951964672"
         res_j = tw.get_one_tweet(search_id)
@@ -59,9 +61,8 @@ class TestTweetsSearchId(unittest.TestCase):
     def test_002(self):
         """id 指定 Tweet のテスト(JSON 全体)"""
 #        self.config.logger.setLevel(logging.DEBUG)
-        default_params = {"tweet_mode": "extended"}
         tw = Tweets(self.config, endpoint=GETID_ENDPOINT,
-                    default_params=default_params,
+                    default_params=self.default_params,
                     resource_family="statuses", resource="statuses/show")
         search_id = "1268346734951964672"
         res_j = tw.get_one_tweet(search_id)

@@ -9,6 +9,9 @@ import json
 import csv
 import datetime
 import argparse
+import re
+
+from janome.tokenizer import Tokenizer
 
 from tslib import TwsConfig
 from tslib import Tweets
@@ -105,7 +108,6 @@ class _CSVWriter:   # unused in current
                 self.csvfile = open(self.outputfile,
                                     mode=self.output_mode, newline='', encoding='utf_8_sig')
 
-
 class SplunkWriter:
     """ Splunk 読み込み用に Tweet 毎に metadata を付加して書き込むための基底クラス """
     def __init__(self, config):
@@ -121,9 +123,16 @@ class SplunkWriter:
         self.__is_json = config['write_json']
         self.__is_write_header = config['write_header']
         self.__write_header_yet = True
+        self.__is_wakati = config['wakati']
 
         if config['getstatus']:
             return
+
+        if self.__is_wakati:
+            if config['user_simpledic'] is None:
+                self._tokenizer = Tokenizer()
+            else:
+                self._tokenizer = Tokenizer(config['user_simpledic'], udic_type='simpledic', udic_enc='utf8')
 
         if config['search_id'] is None:
             if self.__dbasename is None:
@@ -132,7 +141,11 @@ class SplunkWriter:
                 shelve_flag = config['shelve_flag']
                 self.logger.debug("self.__dbasename: %s, shelve_flag: %s",
                                   self.__dbasename, shelve_flag)
-                self.__dbase = shelve.open(self.__dbasename, flag=shelve_flag, writeback=True)
+                try:
+                    self.__dbase = shelve.open(self.__dbasename, flag=shelve_flag, writeback=True)
+                except Exception as e:
+                    print("Cannot open {}".format(self.__dbasename), file=sys.stderr)
+                    sys.exit(255)
                 for key in ('since_id', 'since_date'):
                     key = key.lower()
                     self.logger.debug("shelve: %s: %s", key, self.__get_shelve_value(key))
@@ -179,6 +192,14 @@ class SplunkWriter:
         """レコード生成メソッド"""
         pass    # ignore
 
+    def wakati_convert(self, text):
+        """Text を分かち書きにする"""
+        all_text = re.sub(r'[\n\t\s]+', ' ', text)
+        # 分かち書きに変換
+        # Not implemented yet
+        wakati_text = ' '.join(self._tokenizer.tokenize(all_text, wakati=True))
+        return wakati_text
+
     def convert(self, tweet, metadata, counter=-1):
         """時刻変換、追加、レコードの書き込み"""
         if self.config['search_id'] is None:
@@ -223,6 +244,22 @@ class SplunkWriter:
             'search_metadata': metadata
             }
 
+        # 分かち書きの処理
+        if self.__is_wakati:
+            tmp_dict = dict()
+            textkey = 'text'
+            if 'full_text' in tweet:
+                textkey = 'full_text'
+            tmp_dict['text'] = self.wakati_convert(tweet[textkey])
+
+            if 'extended_tweet' in tweet:
+                tmp_dict['extended_text'] = self.wakati_convert(tweet['extended_tweet']['full_text'])
+
+            wakati_tweet_dict = {
+                'wakati': tmp_dict
+                }
+            tweet_dict.update(wakati_tweet_dict)
+
         if self.__is_localno:
             tweet_dict['base']['gettime'] = datetime2datevalue(now)
             tweet_dict['base']['localno'] = counter
@@ -243,6 +280,7 @@ class SplunkWriter:
         fieldnames = [
             'created_at_exceltime', 'created_at_epoch', 'created_at', 'created_at_jst',
             'text', 'extended_text', 'hashtags', 'id', 'userId', 'name', 'screen_name', 'fixlink',
+            'wakati_text', 'wakati_extended_text'
             ]
         writer = csv.DictWriter(self.__outfp, fieldnames=fieldnames,
                                 extrasaction='ignore', quoting=csv.QUOTE_ALL)
@@ -274,6 +312,16 @@ class SplunkWriter:
 
         self.logger.debug("textkey = %s", textkey)
 
+        if self.__is_wakati:
+            wakati = tweet_json['wakati']
+            wakati_text = wakati['text']
+            wakati_extended_text = wakati['extended_text'] if 'extended_text' in wakati else ''
+        else:
+            wakati_text = ''
+            wakati_extended_text = ''
+            
+            
+
         tweet_dict = {
             'userId': workuser['id'],
             'name': workuser['name'],
@@ -287,7 +335,9 @@ class SplunkWriter:
             'created_at_epoch': str2epoch(tweet['created_at']),
             'created_at_jst': str_to_datetime_jp(tweet['created_at']),
             'fixlink': 'https://twitter.com/' + workuser['screen_name'] + \
-                                                    '/status/' + tweet['id_str']
+                                                    '/status/' + tweet['id_str'],
+            'wakati_text': wakati_text,
+            'wakati_extended_text': wakati_extended_text
             }
         if self.__is_localno:
             tweet_dict['gettime'] = tweet_json['base']['gettime']
@@ -308,6 +358,7 @@ class SplunkWriterBySearch(SplunkWriter):
             params = {'q': query}
             for key in ('since_id', 'since_date', 'max_id', 'max_date', 'count'):
                 value = config[key]
+                self.logger.debug("in generate, key: %s, value %s", key, value)
                 if value is not None:
                     params[key] = value
 
@@ -376,6 +427,8 @@ def tw_argparse():
                         help=u'Dry Run, no execution')
     parser.add_argument('-g', '--getstatus', action='store_true',
                         help=u'limit status 情報を取得・表示して終了')
+    parser.add_argument('--wakati', action='store_true',
+                        help=u'Tweet 本文を分かち書きにする')
 
     # 排他オプション
     optgroup1 = parser.add_mutually_exclusive_group()
@@ -484,6 +537,9 @@ def tw_argparse():
 
     argparams['getstatus'.lower()] = args.getstatus
     logging.debug('getstatus: %s', argparams['getstatus'.lower()])
+
+    argparams['wakati'.lower()] = args.wakati
+    logging.debug('wakati: %s', argparams['wakati'.lower()])
 
     if argparams['search_id'] is None and argparams['search_string'] == "":
         print("Search String is required", file=sys.stderr)

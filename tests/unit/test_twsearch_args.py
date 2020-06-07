@@ -31,6 +31,7 @@ class TestTwSearchArgs(unittest.TestCase):
         self.sys_argv = copy.deepcopy(sys.argv)
 
     def tearDown(self):
+        del sys.argv[:]
         sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_argtest_001(self):
@@ -60,6 +61,7 @@ class TestTwSearchArgs(unittest.TestCase):
         self.assertFalse(config['verbose'])
         self.assertFalse(config['silence'])
         self.assertFalse(config['debug'])
+        self.assertFalse(config['wakati'])
         del config
             
     def test_argtest_002(self):
@@ -281,6 +283,12 @@ class TestTwSearchArgs(unittest.TestCase):
         del config
         config = set_sys_args('--debug')
         self.assertTrue(config['debug'])
+        del config
+
+    def test_argtest_024(self):
+        """--wakati オプションテスト"""
+        config = set_sys_args('--wakati')
+        self.assertTrue(config['wakati'])
         del config
 
 

@@ -34,6 +34,10 @@ class TestTwSearchGetStatus(unittest.TestCase):
     def setUp(self):
         self.sys_argv = copy.deepcopy(sys.argv)
 
+    def tearDown(self):
+        del sys.argv[:]
+        sys.argv = copy.deepcopy(self.sys_argv)
+
 #    @unittest.expectedFailure
     def test_disp_limit_status_001(self):
         """-g オプションによるdisp_limit_status() テスト"""
@@ -73,8 +77,6 @@ reset(epoch2datetime): 2020-06-02 17:18:01
             self.assertEqual(line, lss_lines[i])
         del splunk_writer
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
 
 
 if __name__ == "__main__":

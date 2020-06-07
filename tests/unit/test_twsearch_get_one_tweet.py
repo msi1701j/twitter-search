@@ -23,7 +23,7 @@ GETID_ENDPOINT = "https://api.twitter.com/1.1/statuses/show.json"
 GETID_FAMILY = "statuses"
 GETID_RESOURCE = "statuses/show"
 
-RE_VALNUM = re.compile(r'(?P<target>("statuses_count"|"favorite_count"|"favourites_count"):\s*)\d+')
+RE_VALNUM = re.compile(r'(?P<target>"(statuses_count|favorite_count|favourites_count|friends_count|followers_count)":\s*)\d+')
 
 TWEET_CONTENT_PREFIX = """{
 """
@@ -240,10 +240,10 @@ TWEET_ADDITIONAL_POSTFIX="""  },
 """
 
 CSV_PREFIX="\ufeff"
-CSV_HEADER=""""created_at_exceltime","created_at_epoch","created_at","created_at_jst","text","extended_text","hashtags","id","userId","name","screen_name","fixlink"
+CSV_HEADER=""""created_at_exceltime","created_at_epoch","created_at","created_at_jst","text","extended_text","hashtags","id","userId","name","screen_name","fixlink","wakati_text","wakati_extended_text"
 """
 CSV_CONTENT=""""43986.04167824074","1591232401","Thu Jun 04 01:00:01 +0000 2020","2020-06-04 10:00:01 JST","ずいぶん前に作ったロゴ。
-#ロゴ #五十嵐家 #logo https://t.co/3xHgegtckl","","ロゴ,五十嵐家,logo","1268346734951964672","14963504","五十嵐智(いかちょー)","Ikarashi","https://twitter.com/Ikarashi/status/1268346734951964672"
+#ロゴ #五十嵐家 #logo https://t.co/3xHgegtckl","","ロゴ,五十嵐家,logo","1268346734951964672","14963504","五十嵐智(いかちょー)","Ikarashi","https://twitter.com/Ikarashi/status/1268346734951964672","",""
 """
 
 def set_sys_args(*args):
@@ -258,6 +258,10 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
     """get_one_tweet() 取得のテスト"""
     def setUp(self):
         self.sys_argv = copy.deepcopy(sys.argv)
+
+    def tearDown(self):
+        del sys.argv[:]
+        sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_get_one_tweet_001(self):
         """-i オプションによる get_one_tweet() テスト"""
@@ -275,8 +279,6 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
         del res_j
         del splunk_writer
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_get_one_tweet_002(self):
         """-i オプションによる generate() テスト(CSV)"""
@@ -303,8 +305,6 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
             self.assertEqual(line, tc_line)
         os.remove(outputfilename)
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_get_one_tweet_003(self):
         """-i オプションによる generate() 追記テスト(CSV)"""
@@ -336,8 +336,6 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
             self.assertEqual(line, tc_line)
         os.remove(outputfilename)
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_get_one_tweet_004(self):
         """-i オプションによる generate() テスト(CSV ヘッダ付き)"""
@@ -364,8 +362,6 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
             self.assertEqual(line, tc_line)
         os.remove(outputfilename)
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
 
     def test_get_one_tweet_005(self):
         """-i オプションによる generate() テスト(JSON)"""
@@ -393,8 +389,7 @@ class TestTwSearchGetOneTweet(unittest.TestCase):
             self.assertEqual(line, tc_line)
         os.remove(outputfilename)
         del config
-        del sys.argv[:]
-        sys.argv = copy.deepcopy(self.sys_argv)
+
 
 if __name__ == "__main__":
     unittest.main()

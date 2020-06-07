@@ -21,9 +21,16 @@ class TestTwsConfig(unittest.TestCase):
         argparams['search_string'] = "dummy_search_string"
         self.config = TwsConfig(argparams)
 
+    def tearDown(self):
+        del self.config
+
     def test_001(self):
         """search string のテスト"""
         self.assertEqual(self.config['search_string'], 'dummy_search_string')
+
+    def test_002(self):
+        "user_simpledic のテスト"""
+        self.assertEqual(self.config['user_simpledic'], '/home/msi/work/GitHub.d/msi1701j/twitter-search/local/dic/user_simpledic.csv')
 
 
 class TestTwsConfigAlt(unittest.TestCase):
@@ -32,6 +39,9 @@ class TestTwsConfigAlt(unittest.TestCase):
         argparams = dict()
         argparams['search_string'] = "dummy_search_string1 dummy_search_string2"
         self.config = TwsConfig(argparams)
+
+    def tearDown(self):
+        del self.config
 
     def test_101(self):
         """search string のテスト 101"""

@@ -43,7 +43,7 @@ def check_status_code(logger, res):
     if res is None:
         logger.error("Unknown Response: response is None")
         return STAT_BREAK
-    if res.status_code in (420, 429):
+    if res.status_code in [420, 429]:
         # {
         #   "errors": [
         #     {
@@ -55,11 +55,11 @@ def check_status_code(logger, res):
         dump_response(logger, logging.INFO, "Rate limit in get_one_tweet", res)
         return STAT_WAIT
 
-    if res.status_code in (500, 502, 503, 504):
+    if res.status_code in [500, 502, 503, 504]:
         dump_response(logger, logging.ERROR, "50x Error", res)
         return STAT_RETRY
 
-    if res.status_code == 400:
+    if res.status_code in [400]:
         # {
         #   "errors": [
         #     {
@@ -71,18 +71,19 @@ def check_status_code(logger, res):
         dump_response(logger, logging.ERROR, "Invalid Parameters", res)
         return STAT_ERR_EXIT
 
-    if res.status_code == 401:
+    if res.status_code in [401]:
         dump_response(logger, logging.ERROR, "Auth Error", res)
         return STAT_ERR_EXIT
 
-    if res.status_code == (403, 404):
+    if res.status_code in [403, 404]:
         entry = res.json()
         errors = entry['errors']
         for err in errors:
             code = err['code']
-            if code in (ERR_INVALID_PARAM_ERROR, ERR_NO_SPECIFIED_ID, ERR_NO_STATUS_ID):
+            if code in [ERR_AUTH_ERROR, ERR_INVALID_PARAM_ERROR, ERR_NO_SPECIFIED_ID, ERR_NO_STATUS_ID]:
                 dump_response(logger, logging.ERROR, err['message'], res)
                 sys.exit(code)
+
         return STAT_RETRY
 
 
