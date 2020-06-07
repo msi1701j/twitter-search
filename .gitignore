@@ -134,3 +134,4 @@ twsearch.json
 twsearch.csv
 twsearch.shelve
 tmp/
+*.swp

@@ -12,14 +12,85 @@ import requests
 
 from .ts_dateutils import epoch2datetime
 
+ERR_NO_SPECIFIED_ID     =   8
+ERR_INVALID_COUNT_ERROR =  44
+ERR_RATE_LIMIT_EXCEEDED =  88
+ERR_AUTH_ERROR          =  99
+ERR_NO_STATUS_ID        = 144
+ERR_INVALID_PARAM_ERROR = 195
+
+STAT_CONTINUE   =  1
+STAT_BREAK      =  2
+STAT_RETRY      =  4
+STAT_WAIT       =  8
+STAT_ERR_EXIT   = 16
+
+def dump_response(logger, level, message, res):
+    """requests のエラーを level でダンプ出力"""
+    if res is not None:
+        entry = res.json()
+        if entry is not None:
+            logger.log(level, "%s: status_code: %d, %s",
+                            message, res.status_code,
+                            json.dumps(entry, ensure_ascii=False, indent=2))
+            errors = entry['errors'] if 'errors' in entry else ()
+            for err in errors:
+                logger.log(level, "errors: %s",
+                                json.dumps(err, ensure_ascii=False, indent=2))
+
+def check_status_code(logger, res):
+    """requests のエラーをチェック"""
+    if res is None:
+        logger.error("Unknown Response: response is None")
+        return STAT_BREAK
+    if res.status_code in [420, 429]:
+        # {
+        #   "errors": [
+        #     {
+        #       "code": 88,
+        #       "message": "Rate limit exceeded"
+        #     }
+        #   ]
+        # }
+        dump_response(logger, logging.INFO, "Rate limit in get_one_tweet", res)
+        return STAT_WAIT
+
+    if res.status_code in [500, 502, 503, 504]:
+        dump_response(logger, logging.ERROR, "50x Error", res)
+        return STAT_RETRY
+
+    if res.status_code in [400]:
+        # {
+        #   "errors": [
+        #     {
+        #       "code": 44,
+        #       "message": "count parameter is invalid."
+        #     }
+        #   ]
+        # }
+        dump_response(logger, logging.ERROR, "Invalid Parameters", res)
+        return STAT_ERR_EXIT
+
+    if res.status_code in [401]:
+        dump_response(logger, logging.ERROR, "Auth Error", res)
+        return STAT_ERR_EXIT
+
+    if res.status_code in [403, 404]:
+        entry = res.json()
+        errors = entry['errors']
+        for err in errors:
+            code = err['code']
+            if code in [ERR_AUTH_ERROR, ERR_INVALID_PARAM_ERROR, ERR_NO_SPECIFIED_ID, ERR_NO_STATUS_ID]:
+                dump_response(logger, logging.ERROR, err['message'], res)
+                sys.exit(code)
+
+        return STAT_RETRY
+
+
 #from abc import ABCMeta
 #class Tweets(metaclass=ABCMeta):
 class Tweets:
     """ Tweets を取得する基底クラス """
-    __Invalid_Param_Error = 195
-    __Auth_Error = 99
-    __Invalid_Count_Error = 44
-    __Rate_Limit_Exceeded = 88
 
     def __init__(self, config, endpoint, default_params,
                  resource_family='search', resource='/search/tweets'):
@@ -76,17 +147,16 @@ class Tweets:
             res.raise_for_status()
         except (TimeoutError, requests.ConnectionError) as e:
             self.logger.exception("Timeout: %s", e)
-            self.dump_response(logging.ERROR, "Timeout", res)
+            dump_response(self.logger, logging.ERROR, "Timeout", res)
             raise Exception("Cannot get Bearer")
         except requests.exceptions.HTTPError as e:
-            self.logger.exception("Exception Type: %s", type(e))
-            self.dump_response(logging.ERROR, "Cannot get Bearer", res)
-            if res.status_code == 403:
-                raise requests.exceptions.HTTPError("Auth Error")
-            raise requests.exceptions.HTTPError("Other Exception")
+            dump_response(self.logger, logging.ERROR, "Cannot get Bearer", res)
+            status = check_status_code(self.logger, res)
+            if status == STAT_ERR_EXIT:
+                sys.exit(255)
         except Exception as e:
             self.logger.exception("Exception Type: %s", type(e))
-            self.dump_response(logging.ERROR, "Cannot get Bearer", res)
+            dump_response(self.logger, logging.ERROR, "Cannot get Bearer", res)
             raise Exception("Cannot get Bearer")
         rjson = res.json()
         return rjson['access_token']
@@ -96,6 +166,11 @@ class Tweets:
         pair = apikey + ':' + apisec
         bcred = b64encode(pair.encode('utf-8'))
         return bcred.decode()
+
+
+    def get_limit_status(self):
+        return self.__get_limit_status()
+
 
     def __get_limit_status(self):
         STATUS_ENDPOINT = 'https://api.twitter.com/1.1/application/rate_limit_status.json'
@@ -111,13 +186,18 @@ class Tweets:
             res.raise_for_status()
         except (TimeoutError, requests.ConnectionError) as e:
             self.logger.exception("Timeout: %s", e)
-            self.dump_response(logging.ERROR, "Timeout", res)
+            dump_response(self.logger, logging.ERROR, "Timeout", res)
             raise requests.ConnectionError("Cannot get Limit Status")
+        except requests.exceptions.HTTPError as e:
+            dump_response(self.logger, logging.ERROR, "Cannot get Limit Status", res)
+            status = check_status_code(self.logger, res)
+            if status == STAT_ERR_EXIT:
+                sys.exit(255)
         except Exception as e:
             self.logger.exception("Exception Type: %s", type(e))
-            self.dump_response(logging.ERROR, "Cannot get Limit Status", res)
+            dump_response(self.logger, logging.ERROR, "Cannot get Limit Status", res)
             raise Exception("Cannot get Limit Status")
-        self.dump_response(logging.INFO, "Limit Status", res)
+        dump_response(self.logger, logging.INFO, "Limit Status", res)
         return res.json()
 
     def __calc_sleeptime(self, target_epoch_time):
@@ -168,6 +248,74 @@ class Tweets:
             return self.__params[key]
         return None
 
+    def get_one_tweet(self, search_id, retry_max=5, interval_time=10):
+        self.logger.debug("called Tweets.get_one_tweet(%s, %d, %d)",
+                          search_id, retry_max, interval_time)
+        params = {
+            'id': str(search_id),
+            'tweet_mode': 'extended'
+        }
+        headers = {
+            'Authorization':'Bearer {}'.format(self.__Bearer),
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'User-Agent':   self.__UserAgent,
+        }
+
+        retry = 0
+        url = self.__Endpoint
+#        while retry <= retry_max:
+        while True:
+            self.logger.debug("dryrun: %s", self.config['dryrun'])
+            if self.config['dryrun']:
+                retry += 1
+                if retry > retry_max:
+                    break  # StopIteration
+                self.logger.info("dryrun, retry %d", retry)
+                continue
+
+            try:
+                res = requests.get(url, headers=headers, params=params, timeout=10.0)
+                res.raise_for_status()
+            except (TimeoutError, requests.ConnectionError) as e:
+                self.logger.exception("Timeout: %s", e)
+                retry += 1
+                if retry > retry_max:
+                    break  # StopIteration
+                self.logger.info("retrying: %d sleep well...", retry)
+                time.sleep(interval_time)
+                continue
+            except requests.HTTPError as e:
+                status = check_status_code(self.logger, res)
+                if status == STAT_WAIT:
+                    self.wait_reset()
+                    retry = 0
+                    continue
+
+                if status == STAT_RETRY:
+                    retry += 1
+                    if retry > retry_max:
+                        break  # StopIteration
+                    self.logger.info("retrying: %d sleep well...", retry)
+                    time.sleep(interval_time)
+                    continue
+
+                if status == STAT_ERR_EXIT:
+                    sys.exit(255)
+
+                self.logger.exception("Exception: %s", e)
+                dump_response(self.logger, logging.ERROR, "HTTPError", res)
+                raise requests.HTTPError("HTTPError")
+
+            except Exception as e:
+                self.logger.exception("Exception: %s", e)
+                dump_response(self.logger, logging.ERROR, "Unexpected Exception", res)
+                raise Exception("Unexpected Exception")
+
+            self.logger.debug("status_code: %d", res.status_code)
+            dump_response(self.logger, logging.DEBUG, "get_one_tweet()", res)
+            return res.json()
+
+
     def generator(self, given_params, retry_max=5, interval_time=5, dispcount=-1):
         """Tweet を取得して一つずつに分離し、それぞれを metadata と対にして返す"""
         self.logger.debug("called Tweets.generator(%s, %d, %d)",
@@ -215,25 +363,13 @@ class Tweets:
                 time.sleep(interval_time)
                 continue
             except requests.HTTPError as e:
-                if res is not None and (res.status_code == 429 or res.status_code == 420):
-                    # {
-                    #   "errors": [
-                    #     {
-                    #       "code": 88,
-                    #       "message": "Rate limit exceeded"
-                    #     }
-                    #   ]
-                    # }
-                    self.dump_response(logging.INFO, "Rate limit in generator", res)
-                    self.logger.info("Rate limit in generator: %d, %s", res.status_code, e)
+                status = check_status_code(self.logger, res)
+                if status == STAT_WAIT:
                     self.wait_reset()
                     retry = 0
                     continue
 
-                if res.status_code == 500 or res.status_code == 502 or \
-                    res.status_code == 503 or res.status_code == 504:
-
-                    self.dump_response(logging.ERROR, "50x Error", res)
+                if status == STAT_RETRY:
                     retry += 1
                     if retry > retry_max:
                         break  # StopIteration
@@ -241,59 +377,16 @@ class Tweets:
                     time.sleep(interval_time)
                     continue
 
-                if res.status_code == 400:
-                    # {
-                    #   "errors": [
-                    #     {
-                    #       "code": 44,
-                    #       "message": "count parameter is invalid."
-                    #     }
-                    #   ]
-                    # }
-                    self.dump_response(logging.ERROR, "Invalid Parameters", res)
-                    raise Exception("Invalid Parameter")
-
-                if res.status_code == 401:
-                    # self.__Auth_Error:
-                    # Error status: 403
-                    # {
-                    #   "errors": [
-                    #     {
-                    #       "label": "authenticity_token_error",
-                    #       "code": 99,
-                    #       "message": "Unable to verify your credentials"
-                    #     }
-                    #   ]
-                    # }
-                    self.dump_response(logging.ERROR, "Auth Error", res)
-                    raise Exception('Auth Error')
-
-                if res.status_code == 403:
-                    brk = False
-                    entry = res.json()
-                    if entry is not None:
-                        errors = entry['errors']
-                        for err in errors:
-                            code = err['code']
-                            if code == self.__Invalid_Param_Error:
-                                # "message": "Missing or invalid url parameter."
-                                brk = True
-                    if brk:
-                        raise Exception("Missing or invalid url parameter")
-                    retry += 1
-                    if retry > retry_max:
-                        break  # StopIteration
-                    self.logger.info("retrying: %d sleep well...", retry)
-                    time.sleep(interval_time)
-                    continue
+                if status == STAT_ERR_EXIT:
+                    sys.exit(255)
 
                 self.logger.exception("Exception: %s", e)
-                self.dump_response(logging.ERROR, "HTTPError", res)
+                dump_response(self.logger, logging.ERROR, "HTTPError", res)
                 raise requests.HTTPError("HTTPError")
 
             except Exception as e:
                 self.logger.exception("Exception: %s", e)
-                self.dump_response(logging.ERROR, "Unexpected Exception", res)
+                dump_response(self.logger, logging.ERROR, "Unexpected Exception", res)
                 raise Exception("Unexpected Exception")
 
             entry = res.json()
@@ -314,7 +407,7 @@ class Tweets:
             for tweet in entry['statuses']:
                 saved_max_id = tweet['id']
                 self.logger.info("saved_max_id: %d", saved_max_id)
-                yield (tweet, metadata)
+                yield tweet, metadata
 
             if metadata is not None:
                 self.logger.debug("metadata: %s",
@@ -348,17 +441,3 @@ class Tweets:
         for ent in entities_hashtags:
             hashtags.append(ent['text'])
         return hashtags
-
-
-    def dump_response(self, level, message, res):
-        """requests のエラーを level でダンプ出力"""
-        if res is not None:
-            entry = res.json()
-            if entry is not None:
-                self.logger.log(level, "%s: status_code: %d, %s",
-                                message, res.status_code,
-                                json.dumps(entry, ensure_ascii=False, indent=2))
-                errors = entry['errors'] if 'errors' in entry else ()
-                for err in errors:
-                    self.logger.log(level, "errors: %s",
-                                    json.dumps(err, ensure_ascii=False, indent=2))

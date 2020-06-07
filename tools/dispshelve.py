@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import sys
 import shelve
 import argparse
 
 def print_shelve( shelvefile ):
-	if shelvefile is not None:
-		print( 'Shelve File:', shelvefile)
-		dbase = shelve.open(shelvefile, flag='r')
-		for k in dbase.keys():
-			print( '{}: {}'.format(k, dbase[k]) )
-		dbase.close()
-
+    if shelvefile is not None:
+        print( 'Shelve File:', shelvefile)
+        try:
+            with shelve.open(shelvefile, flag='r') as dbase:
+                for k in dbase.keys():
+                    print( '{}: {}'.format(k, dbase[k]) )
+        except Exception as e:
+            print(e)
+            sys.exit(1)
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
